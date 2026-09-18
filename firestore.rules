@@ -1,0 +1,101 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    
+    // Helper function to check if request is authenticated
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    // Match users collection
+    match /users/{userId} {
+      allow read, write: if true; // Open for Phase 1 simulation/testing across verified emails
+    }
+
+    // Match employees collection
+    match /employees/{employeeId} {
+      allow read, write: if true;
+    }
+
+    // Match departments collection
+    match /departments/{deptId} {
+      allow read, write: if true;
+    }
+
+    // Match userAccess collection
+    match /userAccess/{accessId} {
+      allow read, write: if true; // Open for Phase 1 app launcher permissions
+    }
+
+    // Match scopes collection (Phase 3)
+    match /scopes/{scopeId} {
+      allow read, write: if true; // Open for Phase 3 Scope of Work management
+    }
+
+    // Match pricingRules collection (Phase 4)
+    match /pricingRules/{ruleId} {
+      allow read, write: if true; // Open for Phase 4 Price Engine management
+    }
+
+    // Match commissionRules collection
+    match /commissionRules/{ruleId} {
+      allow read, write: if true; // Open for Commission Matrix management
+    }
+
+    // Match pricingCategories collection
+    match /pricingCategories/{catId} {
+      allow read, write: if true;
+    }
+
+    // Match projects collection
+    match /projects/{projectId} {
+      allow read, write: if true;
+    }
+
+    // Match proposals collection (Phase 5)
+    match /proposals/{proposalId} {
+      allow read, write: if true; // Open for Phase 5 Proposal Management
+    }
+
+    // Match clients collection (Phase 5)
+    match /clients/{clientId} {
+      allow read, write: if true; // Open for Phase 5 Client Approvals
+    }
+
+    // Match designs collection (Phase 5)
+    match /designs/{designId} {
+      allow read, write: if true; // Open for Phase 5 Design Approvals
+    }
+
+    // Match apps collection (App Registry)
+    match /apps/{appId} {
+      allow read, write: if true; // Open for App Registry management
+    }
+
+    // Match passwordResetRequests / password_reset_requests
+    match /passwordResetRequests/{requestId} {
+      allow read, write: if true;
+    }
+    match /password_reset_requests/{requestId} {
+      allow read, write: if true;
+    }
+
+    // Match approvals collection
+    match /approvals/{approvalId} {
+      allow read, write: if true;
+    }
+
+    // Match changeRequests / change_requests collection
+    match /changeRequests/{requestId} {
+      allow read, write: if true;
+    }
+    match /change_requests/{requestId} {
+      allow read, write: if true;
+    }
+
+    // Default catch-all
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

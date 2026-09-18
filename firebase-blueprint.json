@@ -1,0 +1,304 @@
+{
+  "entities": {
+    "employee": {
+      "title": "Employee",
+      "description": "Employee record in Solarithm directory",
+      "type": "object",
+      "properties": {
+        "employeeId": { "type": "string" },
+        "name": { "type": "string" },
+        "email": { "type": "string" },
+        "role": { "type": "string" },
+        "department": { "type": "string" },
+        "designation": { "type": "string" },
+        "panCardNumber": { "type": "string", "description": "PAN Card Number" },
+        "aadhaarCardNumber": { "type": "string", "description": "Aadhaar Card Number" },
+        "houseAddress": { "type": "string", "description": "Permanent/Current House Address" },
+        "personalEmailAddress": { "type": "string", "description": "Personal Email Address" },
+        "createdAt": { "type": "string" }
+      },
+      "required": ["name", "email", "role"]
+    },
+    "user": {
+      "title": "User",
+      "description": "User account in Solarithm Admin Console with assigned role and KYC details",
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "Full name of the user"
+        },
+        "email": {
+          "type": "string",
+          "description": "Email address of the user"
+        },
+        "role": {
+          "type": "string",
+          "enum": ["owner", "admin", "sales", "designer"],
+          "description": "Role assigned to the user"
+        },
+        "panCardNumber": {
+          "type": "string",
+          "description": "PAN Card Number"
+        },
+        "aadhaarCardNumber": {
+          "type": "string",
+          "description": "Aadhaar Card Number"
+        },
+        "houseAddress": {
+          "type": "string",
+          "description": "Permanent/Current House Address"
+        },
+        "personalEmailAddress": {
+          "type": "string",
+          "description": "Personal Email Address"
+        },
+        "createdAt": {
+          "type": "string",
+          "description": "ISO timestamp string when user was created"
+        }
+      },
+      "required": ["name", "email", "role"]
+    },
+    "userAccess": {
+      "title": "User Access",
+      "description": "App launcher tool visibility rules for a user",
+      "type": "object",
+      "properties": {
+        "email": {
+          "type": "string",
+          "description": "Email address corresponding to access configuration"
+        },
+        "visibleTools": {
+          "type": "array",
+          "description": "List of tool IDs visible to the user"
+        }
+      },
+      "required": ["email", "visibleTools"]
+    },
+    "scope": {
+      "title": "Scope of Work",
+      "description": "Scope of work item in Solarithm Admin Console with optional sub-services",
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "Scope name (e.g. PRE DESIGN, CEIG, PVSYST)"
+        },
+        "hasSubServices": {
+          "type": "boolean",
+          "description": "Whether this scope item includes tier sub-services"
+        },
+        "subServices": {
+          "type": "array",
+          "description": "List of sub-services (e.g., Standard, Special, Premium)"
+        },
+        "createdAt": {
+          "type": "string",
+          "description": "ISO timestamp string when scope was created"
+        }
+      },
+      "required": ["name", "hasSubServices", "subServices"]
+    },
+    "pricingRule": {
+      "title": "Pricing Rule",
+      "description": "Pricing matrix entry per category, scope, sub-service, and capacity ranges",
+      "type": "object",
+      "properties": {
+        "category": {
+          "type": "string",
+          "enum": ["T1", "T2", "T3", "T4", "T5", "INCENTIVE"],
+          "description": "Pricing category tab"
+        },
+        "scope": {
+          "type": "string",
+          "description": "Scope name associated with pricing rule"
+        },
+        "subService": {
+          "type": "string",
+          "description": "Sub-service tier (e.g. Standard, Special, Premium) or N/A"
+        },
+        "capacityRows": {
+          "type": "array",
+          "description": "Array of capacity ranges with unit, price, and price type"
+        },
+        "updatedAt": {
+          "type": "string",
+          "description": "ISO timestamp string when rule was updated"
+        }
+      },
+      "required": ["category", "scope", "subService", "capacityRows"]
+    },
+    "proposal": {
+      "title": "Proposal Management",
+      "description": "Proposal number linked to pricing category",
+      "type": "object",
+      "properties": {
+        "proposalNumber": {
+          "type": "string",
+          "description": "Unique proposal reference number"
+        },
+        "pricingCategory": {
+          "type": "string",
+          "enum": ["T1", "T2", "T3", "T4", "T5", "INCENTIVE"],
+          "description": "Pricing category assigned to proposal"
+        },
+        "createdAt": {
+          "type": "string",
+          "description": "ISO timestamp when proposal was created"
+        }
+      },
+      "required": ["proposalNumber", "pricingCategory"]
+    },
+    "client": {
+      "title": "Client Document",
+      "description": "Client profile for approval workflow",
+      "type": "object",
+      "properties": {
+        "companyName": { "type": "string" },
+        "contactPerson": { "type": "string" },
+        "city": { "type": "string" },
+        "gstin": { "type": "string" },
+        "submittedBy": { "type": "string" },
+        "status": { "type": "string", "enum": ["pending_approval", "approved", "rejected"] },
+        "pricingCategory": { "type": "string" },
+        "proposalNumber": { "type": "string" },
+        "createdAt": { "type": "string" }
+      },
+      "required": ["companyName", "contactPerson", "city", "submittedBy", "status"]
+    },
+    "design": {
+      "title": "Design Document",
+      "description": "Design submission for approval workflow",
+      "type": "object",
+      "properties": {
+        "projectName": { "type": "string" },
+        "clientName": { "type": "string" },
+        "designerEmail": { "type": "string" },
+        "plantCapacity": { "type": "string" },
+        "status": { "type": "string", "enum": ["pending_design_approval", "approved", "rejected"] },
+        "createdAt": { "type": "string" }
+      },
+      "required": ["projectName", "clientName", "designerEmail", "plantCapacity", "status"]
+    },
+    "appRegistry": {
+      "title": "App Registry",
+      "description": "Registry of application tools",
+      "type": "object",
+      "properties": {
+        "appName": { "type": "string" },
+        "appId": { "type": "string" },
+        "url": { "type": "string" },
+        "description": { "type": "string" },
+        "status": { "type": "string", "enum": ["active", "inactive"] },
+        "createdAt": { "type": "string" }
+      },
+      "required": ["appName", "appId", "url", "status"]
+    },
+    "passwordResetRequest": {
+      "title": "Password Reset Request",
+      "description": "Password reset request submitted via App Launcher",
+      "type": "object",
+      "properties": {
+        "requestedEmail": { "type": "string" },
+        "appName": { "type": "string" },
+        "type": { "type": "string" },
+        "status": { "type": "string", "enum": ["pending", "approved", "rejected"] },
+        "createdAt": { "type": "string" }
+      },
+      "required": ["requestedEmail", "status"]
+    },
+    "department": {
+      "title": "Department",
+      "description": "Organizational department record in Solarithm",
+      "type": "object",
+      "properties": {
+        "name": { "type": "string", "description": "Department name" },
+        "availableRoles": {
+          "type": "array",
+          "description": "Array of system roles available within this department (e.g., ['sales', 'manager', 'admin'])",
+          "items": { "type": "string" }
+        },
+        "code": { "type": "string", "description": "Department short code" },
+        "description": { "type": "string", "description": "Description of department role" },
+        "headOfDepartment": { "type": "string", "description": "Head of department name" },
+        "createdAt": { "type": "string" }
+      },
+      "required": ["name", "availableRoles"]
+    }
+  },
+  "firestore": {
+    "/departments/{deptId}": {
+      "schema": {
+        "$ref": "#/entities/department"
+      },
+      "description": "Collection of organizational departments"
+    },
+    "/employees/{employeeId}": {
+      "schema": {
+        "$ref": "#/entities/employee"
+      },
+      "description": "Collection of employee directory records"
+    },
+    "/users/{userId}": {
+      "schema": {
+        "$ref": "#/entities/user"
+      },
+      "description": "Collection of authorized users"
+    },
+    "/userAccess/{accessId}": {
+      "schema": {
+        "$ref": "#/entities/userAccess"
+      },
+      "description": "Collection of tool access rules per user"
+    },
+    "/scopes/{scopeId}": {
+      "schema": {
+        "$ref": "#/entities/scope"
+      },
+      "description": "Collection of solar engineering scope of work definitions"
+    },
+    "/pricingRules/{ruleId}": {
+      "schema": {
+        "$ref": "#/entities/pricingRule"
+      },
+      "description": "Collection of price engine matrix rules"
+    },
+    "/proposals/{proposalId}": {
+      "schema": {
+        "$ref": "#/entities/proposal"
+      },
+      "description": "Collection of proposal management records"
+    },
+    "/clients/{clientId}": {
+      "schema": {
+        "$ref": "#/entities/client"
+      },
+      "description": "Collection of client approval records"
+    },
+    "/designs/{designId}": {
+      "schema": {
+        "$ref": "#/entities/design"
+      },
+      "description": "Collection of design approval records"
+    },
+    "/apps/{appId}": {
+      "schema": {
+        "$ref": "#/entities/appRegistry"
+      },
+      "description": "Collection of registered application tools"
+    },
+    "/passwordResetRequests/{requestId}": {
+      "schema": {
+        "$ref": "#/entities/passwordResetRequest"
+      },
+      "description": "Collection of password reset requests"
+    },
+    "/approvals/{approvalId}": {
+      "schema": {
+        "$ref": "#/entities/passwordResetRequest"
+      },
+      "description": "Collection of general approvals including password reset requests"
+    }
+  }
+}

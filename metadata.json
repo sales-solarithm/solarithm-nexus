@@ -1,0 +1,6 @@
+{
+  "name": "Solarithm Admin Console",
+  "description": "Phase 1 Admin Console for Solarithm with role-based authentication and Firestore integration.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
