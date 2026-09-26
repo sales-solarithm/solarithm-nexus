@@ -44,6 +44,7 @@ import {
   OperationType
 } from '@/lib/firebase';
 import { ConfirmModal } from './ConfirmModal';
+import { useDataCache } from '@/components/DataCacheContext';
 
 interface ClientsTabProps {
   currentEmail: string;
@@ -54,8 +55,24 @@ export default function ClientsTab({ currentEmail, currentRole }: ClientsTabProp
   const isSuperAdmin = SUPER_ADMIN_EMAILS.includes(currentEmail.toLowerCase());
   const canManageClients = isSuperAdmin || currentRole === 'owner' || currentRole === 'admin';
 
-  const [clients, setClients] = useState<ClientDocument[]>([]);
-  const [loading, setLoading] = useState(true);
+  const {
+    clients: cachedClients,
+    setCachedClients,
+  } = useDataCache();
+
+  const [clients, setClients] = useState<ClientDocument[]>(() => {
+    if (cachedClients && cachedClients.length > 0) return cachedClients;
+    if (typeof window !== 'undefined') {
+      try {
+        const cached = localStorage.getItem('clients');
+        return cached ? JSON.parse(cached) : [];
+      } catch {
+        return [];
+      }
+    }
+    return [];
+  });
+  const [loading, setLoading] = useState(canManageClients && (!cachedClients || cachedClients.length === 0));
   
   const [salesPersons, setSalesPersons] = useState<UserDocument[]>([]);
   
@@ -333,6 +350,7 @@ export default function ClientsTab({ currentEmail, currentRole }: ClientsTabProp
         list.push({ ...(docSnap.data() as ClientDocument), id: docSnap.id });
       });
       setClients(list);
+      setCachedClients(list);
       try {
         localStorage.setItem('clients', JSON.stringify(list));
       } catch (e) {
@@ -357,13 +375,15 @@ export default function ClientsTab({ currentEmail, currentRole }: ClientsTabProp
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [setCachedClients]);
 
   useEffect(() => {
-    if (canManageClients) {
-      loadClientsAndUsers();
+    if (!canManageClients) return;
+    if (cachedClients && cachedClients.length > 0) {
+      return;
     }
-  }, [canManageClients, loadClientsAndUsers]);
+    loadClientsAndUsers();
+  }, [canManageClients, cachedClients, loadClientsAndUsers]);
 
   
   const countCatMatches = clients.filter(c => (c.pricingCategory || 'Nil') === catFrom).length;
@@ -868,9 +888,9 @@ const getStatusBadge = (status: string) => {
         </div>
         
         {/* Results Count Banner */}
-        <div className="pt-3 mt-1 border-t border-[#2A2A2A] flex items-center justify-between text-sm">
-          <span className="text-gray-400 font-mono">
-            Showing <span className="text-[#D4AF37] font-bold">{sortedClients.length}</span> of {clients.length} clients
+        <div className="pt-3 mt-1 border-t border-slate-200 dark:border-[#2A2A2A] flex items-center justify-between text-sm">
+          <span className="text-slate-700 dark:text-gray-400 font-mono bg-slate-100 dark:bg-[#161B22] px-3.5 py-1.5 rounded-lg border border-slate-200 dark:border-[#30363D]">
+            Showing <span className="text-slate-900 dark:text-[#D4AF37] font-bold">{sortedClients.length}</span> of {clients.length} clients
           </span>
           {sortedClients.length === 0 && clients.length > 0 && (
             <button onClick={resetFilters} className="text-amber-400 hover:text-amber-400 transition-colors flex items-center gap-1 cursor-pointer">
@@ -885,7 +905,7 @@ const getStatusBadge = (status: string) => {
         {loading ? (
           <div className="p-12 text-center text-sm text-gray-400 space-y-3">
             <div className="w-8 h-8 border-2 border-[#D4AF37] border-t-transparent rounded-full animate-spin mx-auto" />
-            <p className="font-mono">Loading client database...</p>
+            <p className="font-mono">Loading data from server...</p>
           </div>
         ) : sortedClients.length === 0 ? (
           <div className="p-12 text-center space-y-4">
@@ -1379,7 +1399,7 @@ const getStatusBadge = (status: string) => {
         onClose={() => setIsWipeModalOpen(false)}
         onConfirm={executeWipeClientData}
         title="Wipe All Client Records"
-        message="This will permanently delete ALL client records in this module from Firestore. This action cannot be undone."
+        message="This will permanently delete ALL client records in this module. This action cannot be undone."
         confirmText="Wipe All Records"
         variant="danger"
         requireConfirmationText="WIPE"

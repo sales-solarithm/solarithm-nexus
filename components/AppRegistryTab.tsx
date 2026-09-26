@@ -846,7 +846,7 @@ export default function AppRegistryTab({ currentEmail, currentRole }: AppRegistr
         {loading ? (
           <div className="p-12 text-center text-sm text-gray-400 space-y-3">
             <div className="w-8 h-8 border-2 border-[#D4AF37] border-t-transparent rounded-full animate-spin mx-auto" />
-            <p className="font-mono">Loading application registry...</p>
+            <p className="font-mono">Loading data from server...</p>
           </div>
         ) : filteredApps.length === 0 ? (
           <div className="p-12 text-center text-sm text-gray-500 space-y-2">
@@ -1450,7 +1450,7 @@ export default function AppRegistryTab({ currentEmail, currentRole }: AppRegistr
         onClose={() => setIsWipeModalOpen(false)}
         onConfirm={executeWipeAppData}
         title="Wipe All App Records"
-        message="This will permanently delete ALL registered application records in this module from Firestore. This action cannot be undone."
+        message="This will permanently delete ALL registered application records in this module. This action cannot be undone."
         confirmText="Wipe All Records"
         variant="danger"
         requireConfirmationText="WIPE"

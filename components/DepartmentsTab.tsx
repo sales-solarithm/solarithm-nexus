@@ -40,6 +40,7 @@ import {
 } from 'firebase/firestore';
 import { COLLECTIONS } from '@/src/config/schema';
 import { ConfirmModal } from './ConfirmModal';
+import { useDataCache } from '@/components/DataCacheContext';
 
 const DEFAULT_STANDARD_DEPARTMENTS: Array<{
   name: string;
@@ -113,6 +114,23 @@ function getDepartmentRolesWithFallback(data: Partial<DepartmentDocument>): stri
   return ['sales', 'manager', 'admin'];
 }
 
+const getDeptRoleBadgeClass = (role: string) => {
+  const r = role.toLowerCase().trim();
+  if (r === 'owner' || r === 'director') {
+    return 'bg-amber-100 text-amber-900 border-amber-200 dark:bg-amber-500/10 dark:text-amber-400 dark:border-amber-500/30';
+  }
+  if (r === 'admin') {
+    return 'bg-purple-100 text-purple-900 border-purple-200 dark:bg-purple-500/10 dark:text-purple-300 dark:border-purple-500/30';
+  }
+  if (r === 'sales') {
+    return 'bg-emerald-100 text-emerald-900 border-emerald-200 dark:bg-emerald-500/10 dark:text-emerald-400 dark:border-emerald-500/30';
+  }
+  if (r === 'designer') {
+    return 'bg-blue-100 text-blue-900 border-blue-200 dark:bg-blue-500/10 dark:text-blue-400 dark:border-blue-500/30';
+  }
+  return 'bg-slate-100 text-slate-700 border-slate-200 dark:bg-[#161B22] dark:text-[#D4AF37] dark:border-[#30363D]';
+};
+
 interface DepartmentsTabProps {
   currentEmail: string;
   currentRole: UserRole;
@@ -123,7 +141,15 @@ export default function DepartmentsTab({ currentEmail, currentRole }: Department
   const isSuperAdmin = SUPER_ADMIN_EMAILS.includes(currentEmail.toLowerCase());
   const canManage = isSuperAdmin || currentRole === 'owner' || currentRole === 'admin';
 
+  const {
+    departments: cachedDepts,
+    setCachedDepartments,
+    employees: cachedEmps,
+    setCachedEmployees,
+  } = useDataCache();
+
   const [departments, setDepartments] = useState<DepartmentDocument[]>(() => {
+    if (cachedDepts && cachedDepts.length > 0) return cachedDepts;
     if (typeof window !== 'undefined') {
       try {
         const cached = localStorage.getItem('solarithm_departments');
@@ -134,8 +160,10 @@ export default function DepartmentsTab({ currentEmail, currentRole }: Department
     }
     return [];
   });
-  const [employees, setEmployees] = useState<UserDocument[]>([]);
-  const [loading, setLoading] = useState(canManage);
+  const [employees, setEmployees] = useState<UserDocument[]>(() => {
+    return cachedEmps || [];
+  });
+  const [loading, setLoading] = useState(canManage && (!cachedDepts || cachedDepts.length === 0));
   const [refreshing, setRefreshing] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
@@ -208,6 +236,8 @@ export default function DepartmentsTab({ currentEmail, currentRole }: Department
 
       setDepartments(deptList);
       setEmployees(empList);
+      setCachedDepartments(deptList);
+      setCachedEmployees(empList);
 
       try {
         localStorage.setItem('solarithm_departments', JSON.stringify(deptList));
@@ -222,12 +252,20 @@ export default function DepartmentsTab({ currentEmail, currentRole }: Department
       setLoading(false);
       setRefreshing(false);
     }
-  }, [canManage]);
+  }, [canManage, setCachedDepartments, setCachedEmployees]);
 
   // Initial Data Fetch
   useEffect(() => {
     let isMounted = true;
     const initFetch = async () => {
+      // If already cached in memory, use cache and avoid redundant network round-trip
+      if (cachedDepts && cachedDepts.length > 0 && cachedEmps && cachedEmps.length > 0) {
+        setDepartments(cachedDepts);
+        setEmployees(cachedEmps);
+        setLoading(false);
+        return;
+      }
+
       try {
         const [deptSnap, userSnap] = await Promise.all([
           getDocs(collection(db, COLLECTIONS.DEPARTMENTS)),
@@ -257,6 +295,8 @@ export default function DepartmentsTab({ currentEmail, currentRole }: Department
 
         setDepartments(deptList);
         setEmployees(empList);
+        setCachedDepartments(deptList);
+        setCachedEmployees(empList);
       } catch (err) {
         console.error('Error in initial departments fetch:', err);
       } finally {
@@ -273,7 +313,7 @@ export default function DepartmentsTab({ currentEmail, currentRole }: Department
     return () => {
       isMounted = false;
     };
-  }, [canManage]);
+  }, [canManage, cachedDepts, cachedEmps, setCachedDepartments, setCachedEmployees]);
 
   // Real-time listener for departments
   useEffect(() => {
@@ -290,6 +330,7 @@ export default function DepartmentsTab({ currentEmail, currentRole }: Department
       });
       list.sort((a, b) => (a.name || '').localeCompare(b.name || ''));
       setDepartments(list);
+      setCachedDepartments(list);
       try {
         localStorage.setItem('solarithm_departments', JSON.stringify(list));
       } catch {
@@ -300,7 +341,7 @@ export default function DepartmentsTab({ currentEmail, currentRole }: Department
     });
 
     return () => unsub();
-  }, [canManage]);
+  }, [canManage, setCachedDepartments]);
 
   // Employee count mapping per department
   const employeeCountByDept = useMemo(() => {
@@ -503,7 +544,7 @@ export default function DepartmentsTab({ currentEmail, currentRole }: Department
             Department Management
           </h2>
           <p className="text-sm text-gray-400 mt-1 max-w-2xl">
-            Configure dynamic departments in the <code className="text-[#D4AF37] font-mono text-xs">departments</code> collection to drive Employee Directory mapping and access boundaries.
+            Configure corporate departments to manage role mappings and access permissions across your organization.
           </p>
         </div>
 
@@ -548,7 +589,7 @@ export default function DepartmentsTab({ currentEmail, currentRole }: Department
           <div>
             <span className="text-xs text-gray-400 uppercase font-semibold tracking-wider">Total Departments</span>
             <div className="text-2xl font-bold text-white mt-0.5">{departments.length}</div>
-            <span className="text-xs text-emerald-400 font-medium">Active in Firestore</span>
+            <span className="text-xs text-emerald-400 font-medium">Active Records</span>
           </div>
           <div className="w-10 h-10 rounded-lg bg-amber-500/10 border border-amber-500/20 flex items-center justify-center text-[#D4AF37]">
             <Building2 className="w-5 h-5" />
@@ -608,8 +649,8 @@ export default function DepartmentsTab({ currentEmail, currentRole }: Department
           />
         </div>
 
-        <div className="text-xs text-gray-400 font-mono bg-[#161B22] px-3.5 py-2 rounded-lg border border-[#30363D] self-stretch md:self-auto text-center">
-          Showing <span className="font-bold text-white">{filteredDepartments.length}</span> of {departments.length} Departments
+        <div className="text-xs text-slate-700 dark:text-gray-400 font-mono bg-slate-100 dark:bg-[#161B22] px-3.5 py-2 rounded-lg border border-slate-200 dark:border-[#30363D] self-stretch md:self-auto text-center">
+          Showing <span className="font-bold text-slate-900 dark:text-white">{filteredDepartments.length}</span> of {departments.length} Departments
         </div>
       </div>
 
@@ -618,7 +659,7 @@ export default function DepartmentsTab({ currentEmail, currentRole }: Department
         {loading ? (
           <div className="p-12 text-center text-sm text-gray-400 space-y-3">
             <div className="w-8 h-8 border-2 border-[#D4AF37] border-t-transparent rounded-full animate-spin mx-auto" />
-            <p className="font-mono">Loading departments from Firestore collection &apos;departments&apos;...</p>
+            <p className="font-mono">Loading data from server...</p>
           </div>
         ) : filteredDepartments.length === 0 ? (
           <div className="p-12 text-center text-sm text-gray-500 space-y-4">
@@ -639,7 +680,7 @@ export default function DepartmentsTab({ currentEmail, currentRole }: Department
         ) : (
           <div className="overflow-x-auto">
             <table className="w-full text-left text-sm text-gray-300">
-              <thead className="bg-[#181818] border-b border-[#2A2A2A] text-xs font-mono text-gray-400 uppercase tracking-wider">
+              <thead className="bg-slate-50 dark:bg-[#181818] border-b border-slate-200 dark:border-[#2A2A2A] text-xs font-mono text-slate-600 dark:text-gray-400 uppercase tracking-wider">
                 <tr>
                   <th className="py-3.5 px-4 font-semibold">Code</th>
                   <th className="py-3.5 px-4 font-semibold">Department Name</th>
@@ -659,11 +700,11 @@ export default function DepartmentsTab({ currentEmail, currentRole }: Department
                   return (
                     <tr 
                       key={dept.id || dept.name} 
-                      className="hover:bg-[#252525]/60 transition-colors group"
+                      className="hover:bg-slate-100/90 dark:hover:bg-[#252525]/60 transition-colors group"
                     >
                       {/* Code */}
                       <td className="py-3.5 px-4 font-mono font-bold text-xs">
-                        <span className="px-2 py-1 bg-[#2A2A2A] text-[#D4AF37] border border-[#3A3A3A] rounded">
+                        <span className="px-2 py-1 bg-slate-100 text-amber-900 border border-slate-300 dark:bg-[#2A2A2A] dark:text-[#D4AF37] dark:border-[#3A3A3A] rounded">
                           {dept.code || 'DEPT'}
                         </span>
                       </td>
@@ -682,7 +723,7 @@ export default function DepartmentsTab({ currentEmail, currentRole }: Department
                           {roles.map((r) => (
                             <span
                               key={r}
-                              className="px-2 py-0.5 rounded text-[11px] font-mono font-semibold bg-[#161B22] text-[#D4AF37] border border-[#30363D]"
+                              className={`px-2 py-0.5 rounded text-[11px] font-mono font-semibold border ${getDeptRoleBadgeClass(r)}`}
                             >
                               {r}
                             </span>
@@ -712,8 +753,8 @@ export default function DepartmentsTab({ currentEmail, currentRole }: Department
                         <span 
                           className={`inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-mono font-semibold ${
                             assignedCount > 0 
-                              ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/30' 
-                              : 'bg-gray-800 text-gray-500 border border-gray-700'
+                              ? 'bg-emerald-100 text-emerald-900 border border-emerald-200 dark:bg-emerald-500/10 dark:text-emerald-400 dark:border-emerald-500/30' 
+                              : 'bg-slate-100 text-slate-700 border border-slate-200 dark:bg-gray-800 dark:text-gray-500 dark:border-gray-700'
                           }`}
                         >
                           <Users className="w-3 h-3" />
@@ -989,7 +1030,7 @@ export default function DepartmentsTab({ currentEmail, currentRole }: Department
         message={
           deleteModalState.assignedEmployeeCount > 0
             ? `Notice: ${deleteModalState.assignedEmployeeCount} employee(s) currently belong to this department. Deleting it will not delete employees, but their department mapping should be updated.`
-            : 'Are you sure you want to permanently delete this department record from Firestore?'
+            : 'Are you sure you want to permanently delete this department record? This action cannot be undone.'
         }
         confirmText="Delete Department"
         variant="danger"

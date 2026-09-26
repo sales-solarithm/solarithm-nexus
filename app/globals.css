@@ -52,9 +52,10 @@ html.light [class*="bg-[#1C1C1C]"] {
   background-color: #FFFFFF !important;
 }
 
-/* Subtle Wells, Secondary Surfaces, Badges, Table Rows */
+/* Side Panels, Inputs, Wells, Table Rows, and Secondary Surfaces */
 html.light .bg-\[\#141414\],
 html.light .bg-\[\#161616\],
+html.light .bg-\[\#161B22\],
 html.light .bg-\[\#181818\],
 html.light .bg-\[\#1A1A1A\],
 html.light .bg-\[\#202020\],
@@ -65,9 +66,10 @@ html.light .bg-\[\#252525\],
 html.light .bg-\[\#262626\],
 html.light .bg-\[\#282828\],
 html.light .bg-\[\#2A2A2A\],
+html.light [class*="bg-[#161B22]"],
 html.light [class*="bg-[#181818]"],
 html.light [class*="bg-[#2A2A2A]"] {
-  background-color: #F1F5F9 !important;
+  background-color: #F8FAFC !important;
 }
 
 /* Elevated Hover States & Segmented Buttons */
@@ -171,6 +173,26 @@ html.light .hover\:bg-\[\#333333\]:hover {
 
 html.light .hover\:bg-\[\#2A2A2A\]:hover {
   background-color: #F1F5F9 !important;
+}
+
+html.light .hover\:bg-\[\#252525\]:hover {
+  background-color: #F1F5F9 !important;
+}
+
+/* Light mode table hover */
+html.light tbody tr:hover {
+  background-color: #F1F5F9 !important;
+}
+
+html.light tbody tr:hover td {
+  color: #0F172A !important;
+}
+
+html.light tbody tr:hover .text-white,
+html.light tbody tr:hover .text-gray-200,
+html.light tbody tr:hover .text-gray-300,
+html.light tbody tr:hover .text-gray-400 {
+  color: #0F172A !important;
 }
 
 html.light .hover\:text-white:hover {

@@ -14,6 +14,8 @@ import PriceEngineTab from '@/components/PriceEngineTab';
 import ProposalManagementTab from '@/components/ProposalManagementTab';
 import ApprovalsTab from '@/components/ApprovalsTab';
 
+import { DataCacheProvider } from '@/components/DataCacheContext';
+
 function AdminConsole() {
   const { session, logout } = useAuth();
   const [activeTab, setActiveTab] = useState('overview');
@@ -84,7 +86,9 @@ function AdminConsole() {
 export default function Page() {
   return (
     <AuthGuard>
-      <AdminConsole />
+      <DataCacheProvider>
+        <AdminConsole />
+      </DataCacheProvider>
     </AuthGuard>
   );
 }

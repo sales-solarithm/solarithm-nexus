@@ -1307,7 +1307,7 @@ export default function PriceEngineTab({ currentEmail, currentRole }: PriceEngin
           setCsvOverwriteModal({
             isOpen: true,
             title: 'Import Commission Rules',
-            message: 'Existing commission rules were found in Firestore. Do you want to overwrite all existing rules with this file, or merge/update them?',
+            message: 'Existing commission rules were found on the server. Do you want to overwrite all existing rules with this file, or merge/update them?',
             onOverwrite: () => processCommissionData(rows, true),
             onMerge: () => processCommissionData(rows, false)
           });
@@ -1319,7 +1319,7 @@ export default function PriceEngineTab({ currentEmail, currentRole }: PriceEngin
           setCsvOverwriteModal({
             isOpen: true,
             title: 'Import Pricing Rules',
-            message: 'Existing pricing rules were found in Firestore. Do you want to overwrite all existing rules with this file, or merge/update them?',
+            message: 'Existing pricing rules were found on the server. Do you want to overwrite all existing rules with this file, or merge/update them?',
             onOverwrite: () => processPricingData(rows, true),
             onMerge: () => processPricingData(rows, false)
           });
@@ -1629,7 +1629,7 @@ export default function PriceEngineTab({ currentEmail, currentRole }: PriceEngin
                 </h3>
                 {existingDocId && (
                   <span className="text-[9px] bg-emerald-500/10 border border-emerald-500/30 text-emerald-400 px-2 py-0.5 rounded font-mono">
-                    Saved in Firestore
+                    Saved to Server
                   </span>
                 )}
               </div>
@@ -1656,7 +1656,7 @@ export default function PriceEngineTab({ currentEmail, currentRole }: PriceEngin
             {loadingRules ? (
               <div className="p-12 text-center text-sm text-gray-400 space-y-3">
                 <div className="w-8 h-8 border-2 border-[#D4AF37] border-t-transparent rounded-full animate-spin mx-auto" />
-                <p className="font-mono">Loading pricing rule matrix from Firestore...</p>
+                <p className="font-mono">Loading data from server...</p>
               </div>
             ) : capacityRows.length === 0 ? (
               <div className="p-12 text-center text-sm text-gray-500 space-y-2">
@@ -1771,7 +1771,7 @@ export default function PriceEngineTab({ currentEmail, currentRole }: PriceEngin
               {savingRule ? (
                 <span className="flex items-center gap-1.5">
                   <div className="w-4 h-4 border-2 border-black border-t-transparent rounded-full animate-spin" />
-                  Persisting Matrix to Firestore...
+                  Saving Matrix to Server...
                 </span>
               ) : (
                 <>
@@ -1925,7 +1925,7 @@ export default function PriceEngineTab({ currentEmail, currentRole }: PriceEngin
                 {!isCommissionDirty ? (
                   <span className="text-[9px] bg-emerald-500/10 border border-emerald-500/30 text-emerald-400 px-2 py-0.5 rounded font-mono flex items-center gap-1">
                     <span className="w-1.5 h-1.5 rounded-full bg-emerald-500/10 animate-pulse" />
-                    Saved in Firestore
+                    Saved to Server
                   </span>
                 ) : (
                   <span className="text-[9px] bg-amber-500/10 border border-amber-500/30 text-amber-400 px-2 py-0.5 rounded font-mono">
@@ -1956,7 +1956,7 @@ export default function PriceEngineTab({ currentEmail, currentRole }: PriceEngin
             {loadingCommissionRules ? (
               <div className="p-12 text-center text-sm text-gray-400 space-y-3">
                 <div className="w-8 h-8 border-2 border-[#D4AF37] border-t-transparent rounded-full animate-spin mx-auto" />
-                <p className="font-mono">Loading commission rules from Firestore...</p>
+                <p className="font-mono">Loading data from server...</p>
               </div>
             ) : currentCommissionRows.length === 0 ? (
               <div className="p-12 text-center text-sm text-gray-500 space-y-2">

@@ -1,6 +1,7 @@
 'use client';
 import { COLLECTIONS, CLIENT_STATUS, PROJECT_STATUS, CLIENT_FIELDS, PROJECT_FIELDS } from "@/src/config/schema";
 import { ConfirmModal } from './ConfirmModal';
+import { useDataCache } from '@/components/DataCacheContext';
 
 import React, { useState, useEffect } from 'react';
 import { 
@@ -50,8 +51,13 @@ export default function ScopeOfWorkTab({ currentEmail, currentRole }: ScopeOfWor
   const isSuperAdmin = SUPER_ADMIN_EMAILS.includes(currentEmail.toLowerCase());
   const canManageScopes = isSuperAdmin || currentRole === 'owner' || currentRole === 'admin';
 
-  const [scopes, setScopes] = useState<ScopeDocument[]>([]);
-  const [loading, setLoading] = useState(true);
+  const {
+    scopes: cachedScopes,
+    setCachedScopes,
+  } = useDataCache();
+
+  const [scopes, setScopes] = useState<ScopeDocument[]>(() => (cachedScopes as ScopeDocument[]) || []);
+  const [loading, setLoading] = useState(canManageScopes && (!cachedScopes || cachedScopes.length === 0));
   const [seeding, setSeeding] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [successMsg, setSuccessMsg] = useState<string | null>(null);
@@ -105,6 +111,7 @@ export default function ScopeOfWorkTab({ currentEmail, currentRole }: ScopeOfWor
       // Sort by createdAt or name
       list.sort((a, b) => a.name.localeCompare(b.name));
       setScopes(list);
+      setCachedScopes(list);
       return list;
     } catch (err) {
       console.error('Error fetching scopes of work:', err);
@@ -118,6 +125,12 @@ export default function ScopeOfWorkTab({ currentEmail, currentRole }: ScopeOfWor
 
   useEffect(() => {
     let isMounted = true;
+
+    // Use memory cache to avoid round-trip
+    if (cachedScopes && cachedScopes.length > 0) {
+      return;
+    }
+
     const initFetch = async () => {
       setLoading(true);
       setErrorMsg(null);
@@ -136,6 +149,7 @@ export default function ScopeOfWorkTab({ currentEmail, currentRole }: ScopeOfWor
           list.sort((a, b) => a.name.localeCompare(b.name));
           if (isMounted) {
             setScopes(list);
+            setCachedScopes(list);
           }
         }
       } catch (err) {
@@ -158,7 +172,7 @@ export default function ScopeOfWorkTab({ currentEmail, currentRole }: ScopeOfWor
     return () => {
       isMounted = false;
     };
-  }, [canManageScopes]);
+  }, [canManageScopes, cachedScopes, setCachedScopes]);
 
   const handleSeedDefaults = async () => {
     setSeeding(true);
@@ -308,7 +322,7 @@ export default function ScopeOfWorkTab({ currentEmail, currentRole }: ScopeOfWor
     } catch (err) {
       console.error('Error saving scope:', err);
       const errInfo = handleFirestoreError(err, OperationType.WRITE, COLLECTIONS.SCOPES);
-      setFormError(`Firestore write error: ${errInfo.error}`);
+      setFormError(`Server write error: ${errInfo.error}`);
     } finally {
       setSubmitting(false);
     }
@@ -604,9 +618,9 @@ export default function ScopeOfWorkTab({ currentEmail, currentRole }: ScopeOfWor
           />
         </div>
 
-        <div className="flex items-center gap-2 text-sm text-gray-400 font-mono">
+        <div className="flex items-center gap-2 text-sm text-slate-700 dark:text-gray-400 font-mono">
           <span>Active Scopes:</span>
-          <span className="font-bold text-white bg-[#2A2A2A] px-2.5 py-0.5 rounded-lg border border-[#333333]">
+          <span className="font-bold text-slate-900 dark:text-white bg-slate-100 dark:bg-[#2A2A2A] px-2.5 py-0.5 rounded-lg border border-slate-200 dark:border-[#333333]">
             {filteredScopes.length} of {scopes.length}
           </span>
         </div>
@@ -617,7 +631,7 @@ export default function ScopeOfWorkTab({ currentEmail, currentRole }: ScopeOfWor
         {loading ? (
           <div className="p-12 text-center text-sm text-gray-400 space-y-3">
             <div className="w-8 h-8 border-2 border-[#D4AF37] border-t-transparent rounded-full animate-spin mx-auto" />
-            <p className="font-mono">Loading scopes of work from Firestore...</p>
+            <p className="font-mono">Loading data from server...</p>
           </div>
         ) : filteredScopes.length === 0 ? (
           <div className="p-12 text-center text-sm text-gray-500 space-y-3">
@@ -926,7 +940,7 @@ export default function ScopeOfWorkTab({ currentEmail, currentRole }: ScopeOfWor
         onClose={() => setIsWipeModalOpen(false)}
         onConfirm={executeWipeScopeData}
         title="Wipe All Scope Records"
-        message="This will permanently delete ALL scope of work records in this module from Firestore. This action cannot be undone."
+        message="This will permanently delete ALL scope of work records in this module. This action cannot be undone."
         confirmText="Wipe All Records"
         variant="danger"
         requireConfirmationText="WIPE"

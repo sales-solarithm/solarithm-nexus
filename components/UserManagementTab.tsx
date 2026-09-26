@@ -55,6 +55,8 @@ import {
 } from 'firebase/firestore';
 import { COLLECTIONS, CLIENT_FIELDS } from "@/src/config/schema";
 import { ConfirmModal } from './ConfirmModal';
+import * as XLSX from 'xlsx';
+import { useDataCache } from '@/components/DataCacheContext';
 
 const FALLBACK_ADMIN = 'jay.solarithm@gmail.com';
 
@@ -143,6 +145,64 @@ interface UserManagementTabProps {
   currentRole: UserRole;
 }
 
+// Safely normalize diverse date representations (DD-MM-YYYY, YYYY/MM/DD, ISO, Excel serial) to standard YYYY-MM-DD
+export function normalizeDateToYMD(dateVal: any): string {
+  if (!dateVal) return '';
+  if (typeof dateVal === 'number') {
+    if (dateVal > 1e11) {
+      const d = new Date(dateVal);
+      if (!isNaN(d.getTime())) return d.toISOString().split('T')[0];
+    }
+    if (dateVal > 30000 && dateVal < 70000) {
+      const excelEpoch = new Date(1899, 11, 30);
+      const d = new Date(excelEpoch.getTime() + dateVal * 86400000);
+      if (!isNaN(d.getTime())) return d.toISOString().split('T')[0];
+    }
+  }
+
+  const str = String(dateVal).trim();
+  if (!str) return '';
+
+  // Already standard YYYY-MM-DD
+  if (/^\d{4}-\d{2}-\d{2}$/.test(str)) {
+    return str;
+  }
+
+  // YYYY-MM-DDTHH:mm:ss...
+  if (/^\d{4}-\d{2}-\d{2}T/.test(str)) {
+    return str.split('T')[0];
+  }
+
+  // YYYY/MM/DD or YYYY.MM.DD
+  const ymd = str.match(/^(\d{4})[./-](\d{1,2})[./-](\d{1,2})/);
+  if (ymd && Number(ymd[1]) > 1900) {
+    const y = ymd[1];
+    const m = String(ymd[2]).padStart(2, '0');
+    const d = String(ymd[3]).padStart(2, '0');
+    return `${y}-${m}-${d}`;
+  }
+
+  // DD-MM-YYYY or DD/MM/YYYY or DD.MM.YYYY
+  const dmy = str.match(/^(\d{1,2})[./-](\d{1,2})[./-](\d{4})/);
+  if (dmy) {
+    const d = String(dmy[1]).padStart(2, '0');
+    const m = String(dmy[2]).padStart(2, '0');
+    const y = dmy[3];
+    return `${y}-${m}-${d}`;
+  }
+
+  // Fallback to JS Date parsing
+  const parsed = new Date(str);
+  if (!isNaN(parsed.getTime()) && parsed.getFullYear() > 1900) {
+    const y = parsed.getFullYear();
+    const m = String(parsed.getMonth() + 1).padStart(2, '0');
+    const d = String(parsed.getDate()).padStart(2, '0');
+    return `${y}-${m}-${d}`;
+  }
+
+  return '';
+}
+
 // Helper to convert number to words for Indian Rupees
 function numberToWordsINR(num: number): string {
   if (num === 0) return 'Zero Rupees Only';
@@ -166,8 +226,26 @@ export default function UserManagementTab({ currentEmail, currentRole }: UserMan
   const isSuperAdmin = SUPER_ADMIN_EMAILS.includes(currentEmail.toLowerCase());
   const canManageUsers = isSuperAdmin || currentRole === 'owner' || currentRole === 'admin';
 
-  const [users, setUsers] = useState<UserDocument[]>([]);
-  const [loading, setLoading] = useState(canManageUsers);
+  const {
+    employees: cachedEmps,
+    setCachedEmployees,
+    departments: cachedDepts,
+    setCachedDepartments,
+  } = useDataCache();
+
+  const [users, setUsers] = useState<UserDocument[]>(() => {
+    if (cachedEmps && cachedEmps.length > 0) return cachedEmps;
+    if (typeof window !== 'undefined') {
+      try {
+        const cached = localStorage.getItem('employees');
+        return cached ? JSON.parse(cached) : [];
+      } catch {
+        return [];
+      }
+    }
+    return [];
+  });
+  const [loading, setLoading] = useState(canManageUsers && (!cachedEmps || cachedEmps.length === 0));
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [successMsg, setSuccessMsg] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
@@ -249,10 +327,10 @@ export default function UserManagementTab({ currentEmail, currentRole }: UserMan
   const [workingDays, setWorkingDays] = useState<number>(30);
   const [daysWorked, setDaysWorked] = useState<number>(30);
   const [customHra, setCustomHra] = useState<number | ''>('');
-  const [specialAllowance, setSpecialAllowance] = useState<number>(5000);
+  const [specialAllowance, setSpecialAllowance] = useState<number>(0);
   const [incentiveBonus, setIncentiveBonus] = useState<number>(0);
   const [customPf, setCustomPf] = useState<number | ''>('');
-  const [profTax, setProfTax] = useState<number>(200);
+  const [profTax, setProfTax] = useState<number>(0);
   const [tdsDeduction, setTdsDeduction] = useState<number>(0);
   const [otherDeductions, setOtherDeductions] = useState<number>(0);
 
@@ -289,6 +367,7 @@ export default function UserManagementTab({ currentEmail, currentRole }: UserMan
         return (a.name || '').localeCompare(b.name || '');
       });
       setUsers(list);
+      setCachedEmployees(list);
       try {
         if (typeof window !== 'undefined') {
           localStorage.setItem('employees', JSON.stringify(list));
@@ -303,10 +382,16 @@ export default function UserManagementTab({ currentEmail, currentRole }: UserMan
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [setCachedEmployees]);
 
   useEffect(() => {
     let isMounted = true;
+
+    // Use memory cache to prevent redundant round-trips when switching tabs
+    if (cachedEmps && cachedEmps.length > 0) {
+      return;
+    }
+
     const fetchUsers = async () => {
       try {
         const [userSnap, empSnap] = await Promise.all([
@@ -337,6 +422,7 @@ export default function UserManagementTab({ currentEmail, currentRole }: UserMan
         });
         if (isMounted) {
           setUsers(list);
+          setCachedEmployees(list);
           try {
             if (typeof window !== 'undefined') {
               localStorage.setItem('employees', JSON.stringify(list));
@@ -365,7 +451,7 @@ export default function UserManagementTab({ currentEmail, currentRole }: UserMan
     return () => {
       isMounted = false;
     };
-  }, [canManageUsers]);
+  }, [canManageUsers, cachedEmps, setCachedEmployees]);
 
   // Fetch departments collection on component load and listen for real-time updates
   useEffect(() => {
@@ -499,7 +585,7 @@ export default function UserManagementTab({ currentEmail, currentRole }: UserMan
       designation: 'Solar Sales Associate',
       dateOfJoining: new Date().toISOString().split('T')[0],
       dateOfBirth: '1998-01-01',
-      basicPay: 45000,
+      basicPay: 0,
       bankName: 'HDFC Bank',
       accountNumber: '',
       ifscCode: '',
@@ -521,6 +607,9 @@ export default function UserManagementTab({ currentEmail, currentRole }: UserMan
     const allowedRoles = getDeptRoles(targetDept);
     const initialRole = (user.role || allowedRoles[0] || 'sales') as UserRole;
 
+    const dojNorm = normalizeDateToYMD(user.dateOfJoining || user.doj || '');
+    const dobNorm = normalizeDateToYMD(user.dateOfBirth || user.dob || '');
+
     setFormData({
       employeeId: user.employeeId || `SOL-EMP-${String(users.indexOf(user) + 1).padStart(2, '0')}`,
       name: user.name || '',
@@ -528,9 +617,9 @@ export default function UserManagementTab({ currentEmail, currentRole }: UserMan
       role: initialRole,
       department: userDept,
       designation: user.designation || '',
-      dateOfJoining: user.dateOfJoining || user.doj || '',
-      dateOfBirth: user.dateOfBirth || user.dob || '',
-      basicPay: user.basicPay !== undefined ? user.basicPay : 45000,
+      dateOfJoining: dojNorm,
+      dateOfBirth: dobNorm,
+      basicPay: user.basicPay !== undefined && user.basicPay !== null && !isNaN(Number(user.basicPay)) ? Number(user.basicPay) : 0,
       bankName: user.bankDetails?.bankName || user.bankName || '',
       accountNumber: user.bankDetails?.accountNumber || user.accountNumber || '',
       ifscCode: user.bankDetails?.ifscCode || user.ifscCode || '',
@@ -611,6 +700,9 @@ export default function UserManagementTab({ currentEmail, currentRole }: UserMan
         ifscCode: formData.ifscCode.trim().toUpperCase()
       };
 
+      const dojNormalized = normalizeDateToYMD(formData.dateOfJoining);
+      const dobNormalized = normalizeDateToYMD(formData.dateOfBirth);
+
       const employeePayload: Partial<UserDocument> = {
         employeeId: empIdTrimmed,
         name: nameTrimmed,
@@ -618,10 +710,10 @@ export default function UserManagementTab({ currentEmail, currentRole }: UserMan
         role: formData.role,
         department: formData.department.trim(),
         designation: formData.designation.trim(),
-        dateOfJoining: formData.dateOfJoining,
-        doj: formData.dateOfJoining,
-        dateOfBirth: formData.dateOfBirth,
-        dob: formData.dateOfBirth,
+        dateOfJoining: dojNormalized,
+        doj: dojNormalized,
+        dateOfBirth: dobNormalized,
+        dob: dobNormalized,
         basicPay: basicPayNum,
         bankName: bankDetailsObj.bankName,
         accountNumber: bankDetailsObj.accountNumber,
@@ -700,7 +792,7 @@ export default function UserManagementTab({ currentEmail, currentRole }: UserMan
     } catch (err) {
       console.error('Error saving employee:', err);
       handleFirestoreError(err, OperationType.UPDATE, 'users');
-      setFormError('Failed to save employee to Firestore.');
+      setFormError('Failed to save employee to server.');
     } finally {
       setSubmitting(false);
     }
@@ -825,7 +917,7 @@ export default function UserManagementTab({ currentEmail, currentRole }: UserMan
     } catch (err) {
       console.error('Error deleting employee from Firestore:', err);
       handleFirestoreError(err, OperationType.DELETE, `employees/${deleteModalState.id}`);
-      setErrorMsg("Failed to delete record from Firestore. Check Firebase Security Rules.");
+      setErrorMsg("Failed to delete record from server. Please check permissions.");
     } finally {
       setDeleting(false);
       setDeleteModalState(prev => ({ ...prev, isOpen: false }));
@@ -929,167 +1021,357 @@ export default function UserManagementTab({ currentEmail, currentRole }: UserMan
     const file = e.target.files?.[0];
     if (!file) return;
 
-    const reader = new FileReader();
-    reader.onload = async (event) => {
-      try {
-        const text = event.target?.result as string;
-        let importedList: Partial<UserDocument>[] = [];
+    // Reset input value immediately so user can re-upload same file if desired
+    e.target.value = '';
 
-        if (file.name.endsWith('.json')) {
-          const parsed = JSON.parse(text);
-          importedList = Array.isArray(parsed) ? parsed : [parsed];
-        } else {
-          // Robust CSV line tokenizer respecting quotes and commas inside cells
-          const parseCsvLine = (line: string): string[] => {
-            const result: string[] = [];
-            let current = '';
-            let inQuotes = false;
-            for (let j = 0; j < line.length; j++) {
-              const char = line[j];
-              if (char === '"') {
-                if (inQuotes && line[j + 1] === '"') {
-                  current += '"';
-                  j++;
-                } else {
-                  inQuotes = !inQuotes;
-                }
-              } else if (char === ',' && !inQuotes) {
-                result.push(current.trim());
-                current = '';
-              } else {
-                current += char;
-              }
-            }
-            result.push(current.trim());
-            return result;
-          };
+    setSubmitting(true);
+    setErrorMsg(null);
+    setSuccessMsg(null);
 
-          const lines = text.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
-          if (lines.length <= 1) {
-            setErrorMsg('CSV file is empty or missing data rows.');
-            return;
-          }
-          const headers = parseCsvLine(lines[0]).map(h => h.replace(/^"|"$/g, '').trim().toLowerCase());
-          for (let i = 1; i < lines.length; i++) {
-            const cols = parseCsvLine(lines[i]).map(c => c.replace(/^"|"$/g, '').trim());
-            const rowObj: Record<string, string> = {};
-            headers.forEach((h, idx) => {
-              rowObj[h] = cols[idx] || '';
-            });
+    try {
+      // 1. Fetch live database state of all users to ensure complete upsert fidelity
+      const [userSnap, empSnap] = await Promise.all([
+        getDocs(collection(db, COLLECTIONS.USERS)),
+        getDocs(collection(db, COLLECTIONS.EMPLOYEES || 'employees')).catch(() => ({ forEach: () => {} } as any))
+      ]);
 
-            importedList.push({
-              name: rowObj.name || rowObj['full name'] || rowObj['employee name'] || rowObj.fullname || '',
-              email: rowObj.email || rowObj['official work email'] || rowObj['official email'] || rowObj['work email'] || rowObj['email address'] || '',
-              employeeId: rowObj.employeeid || rowObj['employee id'] || rowObj.id || '',
-              role: (['owner', 'admin', 'sales', 'designer'].includes((rowObj.role || '').toLowerCase()) ? rowObj.role.toLowerCase() : 'sales') as UserRole,
-              department: rowObj.department || rowObj.dept || 'Operations',
-              designation: rowObj.designation || 'Staff',
-              basicPay: parseFloat(rowObj.basicpay || rowObj['basic pay'] || rowObj['basic monthly pay'] || '0') || 0,
-              dateOfJoining: rowObj['date of joining (yyyy-mm-dd)'] || rowObj['date of joining'] || rowObj.dateofjoining || rowObj.doj || '',
-              dateOfBirth: rowObj['date of birth (yyyy-mm-dd)'] || rowObj['date of birth'] || rowObj.dateofbirth || rowObj.dob || '',
-              bankName: rowObj['bank name'] || rowObj.bankname || rowObj.bank || '',
-              accountNumber: rowObj['account number'] || rowObj.accountnumber || rowObj.account || '',
-              ifscCode: (rowObj['ifsc code'] || rowObj.ifsccode || rowObj.ifsc || '').toUpperCase(),
-              // KYC details
-              panCardNumber: (rowObj['pan card number'] || rowObj.pancardnumber || rowObj['pan number'] || rowObj.pan || '').toUpperCase(),
-              aadhaarCardNumber: rowObj['aadhaar card number'] || rowObj.aadhaarcardnumber || rowObj['aadhaar number'] || rowObj.aadhaar || rowObj.aadhar || '',
-              houseAddress: rowObj['house address'] || rowObj.houseaddress || rowObj.address || rowObj['residential address'] || '',
-              personalEmailAddress: (rowObj['personal email address'] || rowObj['personal email'] || rowObj.personalemail || rowObj.personalemailaddress || '').toLowerCase()
-            });
-          }
+      const masterUserMap = new Map<string, UserDocument>();
+      userSnap.forEach((docSnap) => {
+        masterUserMap.set(docSnap.id, { ...(docSnap.data() as UserDocument), id: docSnap.id });
+      });
+      empSnap.forEach((docSnap: any) => {
+        const emp = docSnap.data() as UserDocument;
+        if (!masterUserMap.has(docSnap.id)) {
+          masterUserMap.set(docSnap.id, { ...emp, id: docSnap.id });
         }
+      });
 
-        if (importedList.length === 0) {
-          setErrorMsg('No valid employee records found in file.');
+      // Also merge any users currently in local state to ensure no newly added records are missed
+      users.forEach((u) => {
+        if (u.id && !masterUserMap.has(u.id)) {
+          masterUserMap.set(u.id, u);
+        }
+      });
+
+      // Rapid lookup index maps for matching by employeeId or corporate email
+      const userByEmpId = new Map<string, UserDocument>();
+      const userByEmail = new Map<string, UserDocument>();
+
+      masterUserMap.forEach((u) => {
+        if (u.employeeId && u.employeeId.trim()) {
+          userByEmpId.set(u.employeeId.trim().toLowerCase(), u);
+        }
+        if (u.email && u.email.trim()) {
+          userByEmail.set(u.email.trim().toLowerCase(), u);
+        }
+      });
+
+      // 2. Data Hygiene Helper: clean strings while preserving integers (Aadhaar, Account numbers) without scientific notation
+      const cleanCellToString = (val: any): string => {
+        if (val === null || val === undefined) return '';
+        if (typeof val === 'number') {
+          if (Number.isInteger(val)) {
+            return BigInt(Math.round(val)).toString();
+          }
+          const str = val.toString();
+          if (str.includes('e') || str.includes('E')) {
+            return Number(val).toLocaleString('fullwide', { useGrouping: false });
+          }
+          return str;
+        }
+        const s = String(val).trim();
+        if (/^[+-]?\d+(\.\d+)?[eE][+-]?\d+$/i.test(s)) {
+          try {
+            const num = Number(s);
+            if (!isNaN(num) && Number.isInteger(num)) {
+              return BigInt(Math.round(num)).toString();
+            }
+            return Number(s).toLocaleString('fullwide', { useGrouping: false });
+          } catch {}
+        }
+        return s;
+      };
+
+      // 3. Parse input file: supports .xlsx, .xls, .csv, .tsv, .txt, .json
+      let rawRows: Record<string, any>[] = [];
+
+      if (file.name.toLowerCase().endsWith('.json')) {
+        const text = await file.text();
+        const parsed = JSON.parse(text);
+        const list = Array.isArray(parsed) ? parsed : [parsed];
+        rawRows = list.map((item: any) => {
+          const normalized: Record<string, any> = {};
+          Object.keys(item).forEach((k) => {
+            normalized[k.trim().toLowerCase()] = item[k];
+          });
+          return normalized;
+        });
+      } else {
+        // Read via XLSX (handles binary .xlsx, .xls and text .csv, .tsv)
+        const buffer = await file.arrayBuffer();
+        const workbook = XLSX.read(buffer, { type: 'array' });
+        const firstSheetName = workbook.SheetNames[0];
+        if (!firstSheetName) {
+          setErrorMsg('Uploaded workbook contains no readable sheets.');
+          return;
+        }
+        const worksheet = workbook.Sheets[firstSheetName];
+        // raw: true preserves unformatted integer values for Aadhaar and Account numbers without scientific notation
+        const grid = XLSX.utils.sheet_to_json(worksheet, { header: 1, raw: true, defval: '' }) as any[][];
+
+        if (grid.length <= 1) {
+          setErrorMsg('Uploaded file is empty or contains no employee data rows.');
           return;
         }
 
-        setSubmitting(true);
-        let count = 0;
-        const updatedUsers = [...users];
+        const headers = grid[0].map(h => String(h || '').trim().toLowerCase().replace(/^"|"$/g, ''));
+        for (let i = 1; i < grid.length; i++) {
+          const row = grid[i];
+          if (!row || !Array.isArray(row) || !row.some(cell => cell !== '' && cell !== null && cell !== undefined)) {
+            continue;
+          }
+          const rowObj: Record<string, any> = {};
+          headers.forEach((h, idx) => {
+            rowObj[h] = row[idx] !== undefined ? row[idx] : '';
+          });
+          rawRows.push(rowObj);
+        }
+      }
 
-        for (const emp of importedList) {
-          const name = emp.name?.trim() || '';
-          const email = emp.email?.trim().toLowerCase() || '';
-          const employeeId = emp.employeeId?.trim() || '';
-          if (!email && !employeeId && !name) continue;
+      if (rawRows.length === 0) {
+        setErrorMsg('No valid employee records found in the uploaded file.');
+        return;
+      }
 
-          // Unique key for deduplication / upsert
-          const uniqueKey = (employeeId || email || name).replace(/[^a-zA-Z0-9_.-]/g, '_').toLowerCase();
+      // Helper to extract first non-empty string among possible header aliases
+      const getVal = (rowObj: Record<string, any>, aliases: string[]): string => {
+        for (const alias of aliases) {
+          if (rowObj[alias] !== undefined && rowObj[alias] !== null && String(rowObj[alias]).trim() !== '') {
+            return cleanCellToString(rowObj[alias]);
+          }
+        }
+        return '';
+      };
 
-          const bankObj = {
-            bankName: emp.bankName || emp.bankDetails?.bankName || '',
-            accountNumber: emp.accountNumber || emp.bankDetails?.accountNumber || '',
-            ifscCode: (emp.ifscCode || emp.bankDetails?.ifscCode || '').toUpperCase()
-          };
+      let insertedCount = 0;
+      let updatedCount = 0;
 
-          const pan = (emp.panCardNumber || emp.panNumber || '').trim().toUpperCase();
-          const aadhaar = (emp.aadhaarCardNumber || emp.aadhaarNumber || '').trim();
-          const address = (emp.houseAddress || '').trim();
-          const personalEmail = (emp.personalEmailAddress || emp.personalEmail || '').trim().toLowerCase();
+      for (const rowObj of rawRows) {
+        const empIdVal = getVal(rowObj, ['employeeid', 'employee id', 'emp id', 'empid', 'id']).trim();
+        const emailVal = getVal(rowObj, ['email', 'official work email', 'official email', 'work email', 'email address', 'corporate email']).trim().toLowerCase();
+        const nameVal = getVal(rowObj, ['name', 'full name', 'employee name', 'fullname']).trim();
+
+        if (!empIdVal && !emailVal && !nameVal) {
+          continue; // Skip blank row
+        }
+
+        // MATCH EXISTING RECORD: Match incoming records by unique Employee ID or official corporate email
+        let existingUser: UserDocument | undefined = undefined;
+        if (empIdVal) {
+          existingUser = userByEmpId.get(empIdVal.toLowerCase());
+        }
+        if (!existingUser && emailVal) {
+          existingUser = userByEmail.get(emailVal);
+        }
+        if (!existingUser) {
+          const keyCandidate = (empIdVal || emailVal || nameVal).replace(/[^a-zA-Z0-9_.-]/g, '_').toLowerCase();
+          existingUser = masterUserMap.get(keyCandidate);
+        }
+
+        // Parse optional explicit role
+        const roleStr = getVal(rowObj, ['role', 'user role', 'assigned role', 'userrole']).toLowerCase();
+        const validRoles: UserRole[] = ['owner', 'admin', 'sales', 'designer'];
+        const explicitRole: UserRole | undefined = validRoles.includes(roleStr as UserRole) ? (roleStr as UserRole) : undefined;
+
+        // Parse Basic Pay: strictly preserve 0 as 0 and do not fall back to defaults
+        let hasBasicPay = false;
+        let parsedBasicPay: number = 0;
+        const basicPayAliases = ['basicpay', 'basic pay', 'basic monthly pay', 'salary', 'basic'];
+        for (const alias of basicPayAliases) {
+          if (rowObj[alias] !== undefined && rowObj[alias] !== null && String(rowObj[alias]).trim() !== '') {
+            const raw = rowObj[alias];
+            const num = typeof raw === 'number' ? raw : Number(String(raw).replace(/[^0-9.-]+/g, ''));
+            if (!isNaN(num)) {
+              parsedBasicPay = num;
+              hasBasicPay = true;
+              break;
+            }
+          }
+        }
+
+        // Parse demographic and KYC fields
+        const deptVal = getVal(rowObj, ['department', 'dept']);
+        const desigVal = getVal(rowObj, ['designation', 'title', 'job title', 'position']);
+        const dojVal = getVal(rowObj, ['date of joining (yyyy-mm-dd)', 'date of joining', 'dateofjoining', 'doj', 'joining date']);
+        const dobVal = getVal(rowObj, ['date of birth (yyyy-mm-dd)', 'date of birth', 'dateofbirth', 'dob', 'birth date']);
+        const bankNameVal = getVal(rowObj, ['bank name', 'bankname', 'bank']);
+        const acctVal = getVal(rowObj, ['account number', 'accountnumber', 'account', 'bank account number', 'bank account', 'acct num']);
+        const ifscVal = getVal(rowObj, ['ifsc code', 'ifsccode', 'ifsc']).toUpperCase();
+        const panVal = getVal(rowObj, ['pan card number', 'pancardnumber', 'pan number', 'pan']).toUpperCase();
+        const aadhaarVal = getVal(rowObj, ['aadhaar card number', 'aadhaarcardnumber', 'aadhaar number', 'aadhaar', 'aadhar', 'aadhar card number']);
+        const addressVal = getVal(rowObj, ['house address', 'houseaddress', 'address', 'residential address', 'street address']);
+        const personalEmailVal = getVal(rowObj, ['personal email address', 'personal email', 'personalemail', 'personalemailaddress']).toLowerCase();
+
+        if (existingUser) {
+          // =========================================================================
+          // 1. UPDATE EXISTING EMPLOYEE:
+          // Update only demographic, designation, or salary fields provided in the sheet.
+          // PRESERVE existing assigned roles, permissions, and App Registry mappings!
+          // =========================================================================
+          const targetDocId = existingUser.id || (empIdVal || emailVal || nameVal).replace(/[^a-zA-Z0-9_.-]/g, '_').toLowerCase();
+
+          const finalName = nameVal || existingUser.name || 'Employee';
+          const finalEmail = emailVal || existingUser.email || `${targetDocId}@solarithm.internal`;
+          const finalEmpId = empIdVal || existingUser.employeeId || targetDocId.toUpperCase();
+          const finalRole = explicitRole !== undefined ? explicitRole : existingUser.role;
+          const finalDept = deptVal || existingUser.department || 'Operations';
+          const finalDesig = desigVal || existingUser.designation || 'Staff';
+          const finalBasicPay = hasBasicPay ? parsedBasicPay : (existingUser.basicPay ?? 0);
+          const finalDoj = dojVal || existingUser.dateOfJoining || existingUser.doj || '';
+          const finalDob = dobVal || existingUser.dateOfBirth || existingUser.dob || '';
+
+          const finalBankName = bankNameVal || existingUser.bankName || existingUser.bankDetails?.bankName || '';
+          const finalAcct = acctVal || existingUser.accountNumber || existingUser.bankDetails?.accountNumber || '';
+          const finalIfsc = ifscVal || existingUser.ifscCode || existingUser.bankDetails?.ifscCode || '';
+
+          const finalPan = panVal || existingUser.panCardNumber || existingUser.panNumber || '';
+          const finalAadhaar = aadhaarVal || existingUser.aadhaarCardNumber || existingUser.aadhaarNumber || '';
+          const finalAddress = addressVal || existingUser.houseAddress || '';
+          const finalPersonalEmail = personalEmailVal || existingUser.personalEmailAddress || existingUser.personalEmail || '';
+
+          // CRITICAL: Preserve existing accessibleApps from user document!
+          const finalAccessibleApps = Array.isArray(existingUser.accessibleApps)
+            ? [...existingUser.accessibleApps]
+            : [];
+
+          const finalCreatedAt = existingUser.createdAt || new Date().toISOString();
 
           const payload: UserDocument = {
-            name: name || 'Employee',
-            email: email || `${uniqueKey}@solarithm.internal`,
-            employeeId: employeeId || uniqueKey.toUpperCase(),
-            role: emp.role || 'sales',
-            department: emp.department || 'Operations',
-            designation: emp.designation || 'Staff',
-            basicPay: emp.basicPay || 0,
-            dateOfJoining: emp.dateOfJoining || emp.doj || '',
-            doj: emp.dateOfJoining || emp.doj || '',
-            dateOfBirth: emp.dateOfBirth || emp.dob || '',
-            dob: emp.dateOfBirth || emp.dob || '',
-            bankName: bankObj.bankName,
-            accountNumber: bankObj.accountNumber,
-            ifscCode: bankObj.ifscCode,
-            bankDetails: bankObj,
-            // KYC fields
-            panCardNumber: pan,
-            aadhaarCardNumber: aadhaar,
-            houseAddress: address,
-            personalEmailAddress: personalEmail,
-            panNumber: pan,
-            aadhaarNumber: aadhaar,
-            personalEmail: personalEmail,
-            accessibleApps: emp.accessibleApps || [],
-            createdAt: emp.createdAt || new Date().toISOString(),
+            id: targetDocId,
+            name: finalName,
+            email: finalEmail,
+            employeeId: finalEmpId,
+            role: finalRole,
+            department: finalDept,
+            designation: finalDesig,
+            basicPay: finalBasicPay,
+            dateOfJoining: finalDoj,
+            doj: finalDoj,
+            dateOfBirth: finalDob,
+            dob: finalDob,
+            bankName: finalBankName,
+            accountNumber: finalAcct,
+            ifscCode: finalIfsc,
+            bankDetails: {
+              bankName: finalBankName,
+              accountNumber: finalAcct,
+              ifscCode: finalIfsc
+            },
+            panCardNumber: finalPan,
+            aadhaarCardNumber: finalAadhaar,
+            houseAddress: finalAddress,
+            personalEmailAddress: finalPersonalEmail,
+            panNumber: finalPan,
+            aadhaarNumber: finalAadhaar,
+            personalEmail: finalPersonalEmail,
+            accessibleApps: finalAccessibleApps, // PRESERVED!
+            createdAt: finalCreatedAt,          // PRESERVED!
             updatedAt: new Date().toISOString()
           };
 
-          // Strict upsert with setDoc and merge: true
-          await setDoc(doc(db, COLLECTIONS.USERS, uniqueKey), payload, { merge: true });
-
-          const existingIndex = updatedUsers.findIndex(u => 
-            (u.id && u.id === uniqueKey) || 
-            (u.employeeId && u.employeeId.toLowerCase() === (employeeId || '').toLowerCase()) ||
-            (u.email && u.email.toLowerCase() === email.toLowerCase())
-          );
-
-          if (existingIndex >= 0) {
-            updatedUsers[existingIndex] = { ...updatedUsers[existingIndex], ...payload, id: uniqueKey };
-          } else {
-            updatedUsers.push({ ...payload, id: uniqueKey });
+          // Save to USERS and sync to EMPLOYEES
+          await setDoc(doc(db, COLLECTIONS.USERS, targetDocId), payload, { merge: true });
+          try {
+            await setDoc(doc(db, COLLECTIONS.EMPLOYEES || 'employees', targetDocId), payload, { merge: true });
+          } catch (syncErr) {
+            console.warn('Sync to employees collection note:', syncErr);
           }
-          count++;
-        }
 
-        setUsers(updatedUsers);
-        if (typeof window !== 'undefined') {
-          localStorage.setItem('employees', JSON.stringify(updatedUsers));
-        }
+          masterUserMap.set(targetDocId, payload);
+          if (finalEmpId) userByEmpId.set(finalEmpId.toLowerCase(), payload);
+          if (finalEmail) userByEmail.set(finalEmail.toLowerCase(), payload);
 
-        setSuccessMsg(`Successfully imported and deduplicated ${count} employee record(s).`);
-        setTimeout(() => setSuccessMsg(null), 4000);
-      } catch (err) {
-        console.error('Error importing employees:', err);
-        setErrorMsg('Failed to parse and import employee file.');
-      } finally {
-        setSubmitting(false);
+          updatedCount++;
+        } else {
+          // =========================================================================
+          // 2. INSERT NEW EMPLOYEE:
+          // Insert new employee record. Existing employees are untouched.
+          // =========================================================================
+          const targetDocId = (empIdVal || emailVal || nameVal).replace(/[^a-zA-Z0-9_.-]/g, '_').toLowerCase();
+
+          const payload: UserDocument = {
+            id: targetDocId,
+            name: nameVal || 'Employee',
+            email: emailVal || `${targetDocId}@solarithm.internal`,
+            employeeId: empIdVal || targetDocId.toUpperCase(),
+            role: explicitRole !== undefined ? explicitRole : 'sales',
+            department: deptVal || 'Operations',
+            designation: desigVal || 'Staff',
+            basicPay: hasBasicPay ? parsedBasicPay : 0,
+            dateOfJoining: dojVal,
+            doj: dojVal,
+            dateOfBirth: dobVal,
+            dob: dobVal,
+            bankName: bankNameVal,
+            accountNumber: acctVal,
+            ifscCode: ifscVal,
+            bankDetails: {
+              bankName: bankNameVal,
+              accountNumber: acctVal,
+              ifscCode: ifscVal
+            },
+            panCardNumber: panVal,
+            aadhaarCardNumber: aadhaarVal,
+            houseAddress: addressVal,
+            personalEmailAddress: personalEmailVal,
+            panNumber: panVal,
+            aadhaarNumber: aadhaarVal,
+            personalEmail: personalEmailVal,
+            accessibleApps: [], // New employee starts with empty array; existing employees are untouched
+            createdAt: new Date().toISOString(),
+            updatedAt: new Date().toISOString()
+          };
+
+          await setDoc(doc(db, COLLECTIONS.USERS, targetDocId), payload, { merge: true });
+          try {
+            await setDoc(doc(db, COLLECTIONS.EMPLOYEES || 'employees', targetDocId), payload, { merge: true });
+          } catch (syncErr) {
+            console.warn('Sync to employees collection note:', syncErr);
+          }
+
+          masterUserMap.set(targetDocId, payload);
+          if (payload.employeeId) userByEmpId.set(payload.employeeId.toLowerCase(), payload);
+          if (payload.email) userByEmail.set(payload.email.toLowerCase(), payload);
+
+          insertedCount++;
+        }
       }
-    };
-    reader.readAsText(file);
-    e.target.value = '';
+
+      // 3. Assemble and sort the final merged list of all employees (existing untouched + updated + new)
+      const mergedUsers = Array.from(masterUserMap.values());
+      mergedUsers.sort((a, b) => {
+        if (a.employeeId && b.employeeId) {
+          return a.employeeId.localeCompare(b.employeeId);
+        }
+        return (a.name || '').localeCompare(b.name || '');
+      });
+
+      setUsers(mergedUsers);
+      setCachedEmployees(mergedUsers);
+      if (typeof window !== 'undefined') {
+        localStorage.setItem('employees', JSON.stringify(mergedUsers));
+      }
+
+      setSuccessMsg(
+        `Import complete: ${updatedCount} existing employee(s) updated, ${insertedCount} new employee(s) added. All previous records and App Registry permissions were preserved.`
+      );
+      setTimeout(() => setSuccessMsg(null), 6000);
+    } catch (err) {
+      console.error('Error importing employees:', err);
+      setErrorMsg('Failed to parse and import employee file.');
+    } finally {
+      setSubmitting(false);
+    }
   };
 
   // Open Salary Slip Generator for an employee
@@ -1098,9 +1380,9 @@ export default function UserManagementTab({ currentEmail, currentRole }: UserMan
     setSelectedSalaryEmployee(target);
     setCustomHra('');
     setCustomPf('');
-    setSpecialAllowance(5000);
+    setSpecialAllowance(0);
     setIncentiveBonus(0);
-    setProfTax(200);
+    setProfTax(0);
     setTdsDeduction(0);
     setOtherDeductions(0);
     setWorkingDays(30);
@@ -1167,30 +1449,34 @@ export default function UserManagementTab({ currentEmail, currentRole }: UserMan
       };
     }
 
-    const rawBasic = Number(selectedSalaryEmployee.basicPay) || 45000;
+    const rawBasic = selectedSalaryEmployee.basicPay !== undefined && selectedSalaryEmployee.basicPay !== null && !isNaN(Number(selectedSalaryEmployee.basicPay))
+      ? Math.max(0, Number(selectedSalaryEmployee.basicPay))
+      : 0;
     // Prorated basic based on attendance
     const attendanceFactor = workingDays > 0 ? Math.min(1, Math.max(0, daysWorked / workingDays)) : 1;
     const basic = Math.round(rawBasic * attendanceFactor);
 
-    // HRA (default 40% of basic or custom)
-    const hra = customHra !== '' ? Number(customHra) : Math.round(basic * 0.40);
-    const gross = basic + hra + (Number(specialAllowance) || 0) + (Number(incentiveBonus) || 0);
+    // HRA (only if explicitly entered, no auto-injected 40%)
+    const hra = customHra !== '' && !isNaN(Number(customHra)) ? Math.max(0, Number(customHra)) : 0;
+    const specAllow = Number(specialAllowance) || 0;
+    const bonus = Number(incentiveBonus) || 0;
+    const gross = basic + hra + specAllow + bonus;
 
-    // PF (default 12% of basic capped or custom)
-    const pf = customPf !== '' ? Number(customPf) : Math.min(1800, Math.round(basic * 0.12));
+    // Deductions (only if explicitly entered or configured)
+    const pf = customPf !== '' && !isNaN(Number(customPf)) ? Math.max(0, Number(customPf)) : 0;
     const pt = Number(profTax) || 0;
     const tds = Number(tdsDeduction) || 0;
     const other = Number(otherDeductions) || 0;
     const totalDeductions = pf + pt + tds + other;
 
     const netPayable = Math.max(0, gross - totalDeductions);
-    const payableInWords = numberToWordsINR(netPayable);
+    const payableInWords = netPayable === 0 ? 'Zero Rupees Only' : numberToWordsINR(netPayable);
 
     return {
       basic,
       hra,
-      specialAllowance: Number(specialAllowance) || 0,
-      incentive: Number(incentiveBonus) || 0,
+      specialAllowance: specAllow,
+      incentive: bonus,
       gross,
       pf,
       pt,
@@ -1205,15 +1491,15 @@ export default function UserManagementTab({ currentEmail, currentRole }: UserMan
   const getRoleBadgeStyle = (r: UserRole) => {
     switch (r) {
       case 'owner':
-        return 'bg-amber-500/10 border-amber-500/30 text-amber-400';
+        return 'bg-amber-100 text-amber-900 border-amber-200 dark:bg-amber-500/10 dark:border-amber-500/30 dark:text-amber-400';
       case 'admin':
-        return 'bg-purple-950/80 border-purple-500/60 text-purple-300';
+        return 'bg-purple-100 text-purple-900 border-purple-200 dark:bg-purple-950/80 dark:border-purple-500/60 dark:text-purple-300';
       case 'sales':
-        return 'bg-emerald-500/10 border-emerald-500/30 text-emerald-400';
+        return 'bg-emerald-100 text-emerald-900 border-emerald-200 dark:bg-emerald-500/10 dark:border-emerald-500/30 dark:text-emerald-400';
       case 'designer':
-        return 'bg-blue-500/10 border-blue-500/30 text-blue-400';
+        return 'bg-blue-100 text-blue-900 border-blue-200 dark:bg-blue-500/10 dark:border-blue-500/30 dark:text-blue-400';
       default:
-        return 'bg-gray-500/10 border-gray-500/30 text-gray-200';
+        return 'bg-slate-100 text-slate-700 border-slate-200 dark:bg-gray-500/10 dark:border-gray-500/30 dark:text-gray-200';
     }
   };
 
@@ -1257,7 +1543,7 @@ export default function UserManagementTab({ currentEmail, currentRole }: UserMan
             type="file"
             id="employee-import-input"
             className="hidden"
-            accept=".csv,.json"
+            accept=".csv,.xlsx,.xls,.json"
             onChange={handleImportEmployees}
           />
 
@@ -1286,7 +1572,7 @@ export default function UserManagementTab({ currentEmail, currentRole }: UserMan
             className="px-3.5 py-2.5 bg-[#2A2A2A] hover:bg-[#333333] border border-emerald-500/30 text-emerald-400 font-semibold text-sm rounded-lg transition-all flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
           >
             <Upload className="w-3.5 h-3.5 text-emerald-400" />
-            Import CSV / JSON
+            Import CSV / Excel
           </button>
 
           <button
@@ -1388,8 +1674,8 @@ export default function UserManagementTab({ currentEmail, currentRole }: UserMan
             </select>
           </div>
 
-          <div className="text-xs text-gray-400 font-mono bg-[#161B22] px-3 py-2 rounded-lg border border-[#30363D]">
-            Showing <span className="font-bold text-white">{filteredUsers.length}</span> of {users.length} Records
+          <div className="text-xs text-slate-700 dark:text-gray-400 font-mono bg-slate-100 dark:bg-[#161B22] px-3.5 py-2 rounded-lg border border-slate-200 dark:border-[#30363D]">
+            Showing <span className="font-bold text-slate-900 dark:text-white">{filteredUsers.length}</span> of {users.length} Records
           </div>
         </div>
       </div>
@@ -1399,7 +1685,7 @@ export default function UserManagementTab({ currentEmail, currentRole }: UserMan
         {loading ? (
           <div className="p-12 text-center text-sm text-gray-400 space-y-3">
             <div className="w-8 h-8 border-2 border-[#D4AF37] border-t-transparent rounded-full animate-spin mx-auto" />
-            <p className="font-mono">Loading employee directory from Firestore...</p>
+            <p className="font-mono">Loading data from server...</p>
           </div>
         ) : filteredUsers.length === 0 ? (
           <div className="p-12 text-center text-sm text-gray-500 space-y-2">
@@ -1444,7 +1730,7 @@ export default function UserManagementTab({ currentEmail, currentRole }: UserMan
                   const personalMailVal = u.personalEmailAddress || u.personalEmail || '';
 
                   return (
-                    <tr key={u.id || u.email || idx} className="hover:bg-[#252525] transition-colors group">
+                    <tr key={u.id || u.email || idx} className="hover:bg-slate-100/90 dark:hover:bg-white/5 transition-colors group">
                       {/* Employee ID */}
                       <td className="p-3.5 pl-6">
                         <span className="text-sm font-semibold text-[#D4AF37]">
@@ -1596,20 +1882,20 @@ export default function UserManagementTab({ currentEmail, currentRole }: UserMan
       {/* Add / Edit Employee Administrative Modal */}
       {isModalOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-4 overflow-y-auto">
-          <div className="w-full max-w-2xl max-h-[90vh] overflow-y-auto bg-[#1E1E1E] border border-[#333333] rounded-xl p-4 sm:p-6 md:p-8 space-y-6 shadow-2xl relative my-auto">
-            <div className="flex items-center justify-between pb-4 border-b border-[#2A2A2A]">
+          <div className="w-full max-w-2xl max-h-[90vh] overflow-y-auto bg-white dark:bg-[#1E1E1E] border border-slate-200 dark:border-[#333333] rounded-xl p-4 sm:p-6 md:p-8 space-y-6 shadow-2xl relative my-auto">
+            <div className="flex items-center justify-between pb-4 border-b border-slate-200 dark:border-[#2A2A2A]">
               <div>
-                <h3 className="text-lg font-bold text-white flex items-center gap-2">
-                  <Briefcase className="w-5 h-5 text-[#D4AF37]" />
+                <h3 className="text-lg font-bold text-slate-900 dark:text-white flex items-center gap-2">
+                  <Briefcase className="w-5 h-5 text-[#B38728] dark:text-[#D4AF37]" />
                   {editingUserId ? 'Edit Employee Profile' : 'New Employee Registration'}
                 </h3>
-                <p className="text-xs text-gray-400 mt-0.5">
+                <p className="text-xs text-slate-500 dark:text-gray-400 mt-0.5">
                   Complete official credentials, designation, compensation, and disbursement banking details.
                 </p>
               </div>
               <button
                 onClick={() => setIsModalOpen(false)}
-                className="text-gray-400 hover:text-white p-1 rounded-lg hover:bg-[#2A2A2A] cursor-pointer"
+                className="text-gray-400 hover:text-slate-900 dark:hover:text-white p-1 rounded-lg hover:bg-slate-100 dark:hover:bg-[#2A2A2A] cursor-pointer transition-colors"
               >
                 <X className="w-5 h-5" />
               </button>
@@ -1723,7 +2009,7 @@ export default function UserManagementTab({ currentEmail, currentRole }: UserMan
                       ))}
                     </select>
                     <p className="text-[10px] text-gray-400 mt-1">
-                      Fetched live from Firestore &apos;departments&apos;
+                      Configured in Organization Departments
                     </p>
                   </div>
 
@@ -1988,25 +2274,25 @@ export default function UserManagementTab({ currentEmail, currentRole }: UserMan
       {/* Salary Generator & Printable Payslip Modal */}
       {isSalaryModalOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/85 backdrop-blur-md p-4 overflow-y-auto">
-          <div className="w-full max-w-4xl bg-[#1E1E1E] border border-[#333333] rounded-2xl p-6 md:p-8 space-y-6 shadow-2xl relative my-6 max-h-[92vh] flex flex-col">
+          <div className="w-full max-w-4xl bg-white dark:bg-[#1E1E1E] border border-slate-200 dark:border-[#333333] rounded-2xl p-6 md:p-8 space-y-6 shadow-2xl relative my-6 max-h-[92vh] flex flex-col">
             {/* Modal Header */}
-            <div className="flex items-center justify-between pb-4 border-b border-[#2A2A2A] shrink-0">
+            <div className="flex items-center justify-between pb-4 border-b border-slate-200 dark:border-[#2A2A2A] shrink-0">
               <div className="flex items-center gap-3">
                 <div className="w-10 h-10 rounded-xl bg-amber-500/10 border border-amber-500/20 flex items-center justify-center text-[#D4AF37]">
                   <Calculator className="w-5 h-5" />
                 </div>
                 <div>
-                  <h3 className="text-xl font-bold text-white flex items-center gap-2">
-                    Solarithm Salary Generator & <span className="text-[#D4AF37]">Payslip Engine</span>
+                  <h3 className="text-xl font-bold text-slate-900 dark:text-white flex items-center gap-2">
+                    Solarithm Salary Generator & <span className="text-[#B38728] dark:text-[#D4AF37]">Payslip Engine</span>
                   </h3>
-                  <p className="text-xs text-gray-400">
+                  <p className="text-xs text-slate-500 dark:text-gray-400">
                     Live calculation and printable A4 salary slip synced directly from employee directory records.
                   </p>
                 </div>
               </div>
               <button
                 onClick={() => setIsSalaryModalOpen(false)}
-                className="text-gray-400 hover:text-white p-1.5 rounded-lg hover:bg-[#2A2A2A] cursor-pointer"
+                className="text-gray-400 hover:text-slate-900 dark:hover:text-white p-1.5 rounded-lg hover:bg-slate-100 dark:hover:bg-[#2A2A2A] cursor-pointer transition-colors"
               >
                 <X className="w-5 h-5" />
               </button>
@@ -2017,17 +2303,26 @@ export default function UserManagementTab({ currentEmail, currentRole }: UserMan
               {/* Left Column: Payroll Parameters */}
               <div className="lg:col-span-5 space-y-4">
                 {/* Employee Selector */}
-                <div className="bg-[#161B22] border border-[#30363D] rounded-xl p-4 space-y-3">
-                  <label className="block text-xs font-mono text-[#D4AF37] uppercase font-bold">
+                <div className="bg-slate-50 dark:bg-[#161B22] border border-slate-200 dark:border-[#30363D] rounded-xl p-4 space-y-3">
+                  <label className="block text-xs font-mono text-[#B38728] dark:text-[#D4AF37] uppercase font-bold">
                     Select Employee
                   </label>
                   <select
                     value={selectedSalaryEmployee?.id || ''}
                     onChange={(e) => {
                       const emp = users.find(u => u.id === e.target.value);
-                      if (emp) setSelectedSalaryEmployee(emp);
+                      if (emp) {
+                        setSelectedSalaryEmployee(emp);
+                        setCustomHra('');
+                        setCustomPf('');
+                        setSpecialAllowance(0);
+                        setIncentiveBonus(0);
+                        setProfTax(0);
+                        setTdsDeduction(0);
+                        setOtherDeductions(0);
+                      }
                     }}
-                    className="w-full px-3 py-2 bg-[#1E1E1E] border border-[#30363D] text-white rounded-lg text-sm font-semibold focus:outline-none focus:border-[#D4AF37]"
+                    className="w-full px-3 py-2 bg-white dark:bg-[#1E1E1E] border border-slate-300 dark:border-[#30363D] text-slate-900 dark:text-white rounded-lg text-sm font-semibold focus:outline-none focus:border-[#D4AF37]"
                   >
                     {users.length === 0 ? (
                       <option value="">No active employees in directory</option>
@@ -2041,97 +2336,143 @@ export default function UserManagementTab({ currentEmail, currentRole }: UserMan
                   </select>
 
                   {selectedSalaryEmployee && (
-                    <div className="pt-2 border-t border-[#2A2A2A] text-xs space-y-1 text-gray-400 font-mono">
-                      <div><span className="text-gray-500">Designation:</span> <span className="text-gray-200">{selectedSalaryEmployee.designation || 'Specialist'}</span></div>
-                      <div><span className="text-gray-500">Department:</span> <span className="text-gray-200">{selectedSalaryEmployee.department}</span></div>
-                      <div><span className="text-gray-500">Bank:</span> <span className="text-gray-200">{selectedSalaryEmployee.bankName || selectedSalaryEmployee.bankDetails?.bankName || 'HDFC'}</span> (A/C: {selectedSalaryEmployee.accountNumber || selectedSalaryEmployee.bankDetails?.accountNumber || 'N/A'})</div>
-                      <div><span className="text-gray-500">Base Pay:</span> <span className="text-[#D4AF37] font-bold">₹{Number(selectedSalaryEmployee.basicPay || 0).toLocaleString('en-IN')}</span></div>
+                    <div className="pt-2 border-t border-slate-200 dark:border-[#2A2A2A] text-xs space-y-1 text-slate-600 dark:text-gray-400 font-mono">
+                      <div><span className="text-slate-500 dark:text-gray-500">Designation:</span> <span className="text-slate-800 dark:text-gray-200">{selectedSalaryEmployee.designation || 'Specialist'}</span></div>
+                      <div><span className="text-slate-500 dark:text-gray-500">Department:</span> <span className="text-slate-800 dark:text-gray-200">{selectedSalaryEmployee.department}</span></div>
+                      <div><span className="text-slate-500 dark:text-gray-500">Bank:</span> <span className="text-slate-800 dark:text-gray-200">{selectedSalaryEmployee.bankName || selectedSalaryEmployee.bankDetails?.bankName || 'HDFC'}</span> (A/C: {selectedSalaryEmployee.accountNumber || selectedSalaryEmployee.bankDetails?.accountNumber || 'N/A'})</div>
+                      <div><span className="text-slate-500 dark:text-gray-500">Base Pay:</span> <span className="text-[#B38728] dark:text-[#D4AF37] font-bold">₹{Number(selectedSalaryEmployee.basicPay || 0).toLocaleString('en-IN')}</span></div>
                     </div>
                   )}
                 </div>
 
                 {/* Period & Attendance */}
-                <div className="bg-[#161B22] border border-[#30363D] rounded-xl p-4 space-y-3">
-                  <span className="block text-xs font-mono text-[#D4AF37] uppercase font-bold">
+                <div className="bg-slate-50 dark:bg-[#161B22] border border-slate-200 dark:border-[#30363D] rounded-xl p-4 space-y-3">
+                  <span className="block text-xs font-mono text-[#B38728] dark:text-[#D4AF37] uppercase font-bold">
                     Salary Period & Attendance
                   </span>
 
                   <div className="grid grid-cols-3 gap-2">
                     <div className="col-span-3">
-                      <label className="block text-[11px] text-gray-400 mb-1">Pay Period (Month/Year)</label>
+                      <label className="block text-[11px] text-slate-600 dark:text-gray-400 mb-1">Pay Period (Month/Year)</label>
                       <input
                         type="month"
                         value={salaryMonth}
                         onChange={(e) => setSalaryMonth(e.target.value)}
-                        className="w-full px-3 py-1.5 bg-[#1E1E1E] border border-[#30363D] text-white rounded-lg text-xs font-mono focus:outline-none"
+                        className="w-full px-3 py-1.5 bg-white dark:bg-[#1E1E1E] border border-slate-300 dark:border-[#30363D] text-slate-900 dark:text-white rounded-lg text-xs font-mono focus:outline-none"
                       />
                     </div>
                     <div>
-                      <label className="block text-[11px] text-gray-400 mb-1">Total Days</label>
+                      <label className="block text-[11px] text-slate-600 dark:text-gray-400 mb-1">Total Days</label>
                       <input
                         type="number"
                         min="1"
                         max="31"
                         value={workingDays}
                         onChange={(e) => setWorkingDays(Number(e.target.value) || 30)}
-                        className="w-full px-2.5 py-1.5 bg-[#1E1E1E] border border-[#30363D] text-white rounded-lg text-xs font-mono"
+                        className="w-full px-2.5 py-1.5 bg-white dark:bg-[#1E1E1E] border border-slate-300 dark:border-[#30363D] text-slate-900 dark:text-white rounded-lg text-xs font-mono"
                       />
                     </div>
                     <div className="col-span-2">
-                      <label className="block text-[11px] text-gray-400 mb-1">Paid / Worked Days</label>
+                      <label className="block text-[11px] text-slate-600 dark:text-gray-400 mb-1">Paid / Worked Days</label>
                       <input
                         type="number"
                         min="0"
                         max="31"
                         value={daysWorked}
                         onChange={(e) => setDaysWorked(Number(e.target.value) || 0)}
-                        className="w-full px-2.5 py-1.5 bg-[#1E1E1E] border border-[#30363D] text-white rounded-lg text-xs font-mono"
+                        className="w-full px-2.5 py-1.5 bg-white dark:bg-[#1E1E1E] border border-slate-300 dark:border-[#30363D] text-slate-900 dark:text-white rounded-lg text-xs font-mono"
                       />
                     </div>
                   </div>
                 </div>
 
                 {/* Allowances & Deductions Adjustments */}
-                <div className="bg-[#161B22] border border-[#30363D] rounded-xl p-4 space-y-3">
-                  <span className="block text-xs font-mono text-[#D4AF37] uppercase font-bold">
-                    Allowances & Deductions (₹)
-                  </span>
+                <div className="bg-slate-50 dark:bg-[#161B22] border border-slate-200 dark:border-[#30363D] rounded-xl p-4 space-y-3">
+                  <div className="flex items-center justify-between">
+                    <span className="block text-xs font-mono text-[#B38728] dark:text-[#D4AF37] uppercase font-bold">
+                      Allowances & Deductions (₹)
+                    </span>
+                    <span className="text-[10px] text-slate-500 dark:text-gray-400 font-mono">
+                      Overrides
+                    </span>
+                  </div>
 
                   <div className="grid grid-cols-2 gap-2 text-xs">
                     <div>
-                      <label className="block text-[10px] text-gray-400 mb-0.5">Special Allowance</label>
+                      <label className="block text-[10px] text-slate-600 dark:text-gray-400 mb-0.5">House Rent (HRA)</label>
                       <input
                         type="number"
-                        value={specialAllowance}
-                        onChange={(e) => setSpecialAllowance(Number(e.target.value) || 0)}
-                        className="w-full px-2.5 py-1 bg-[#1E1E1E] border border-[#30363D] text-white rounded text-xs font-mono"
+                        min="0"
+                        value={customHra}
+                        placeholder="0"
+                        onChange={(e) => setCustomHra(e.target.value === '' ? '' : Math.max(0, Number(e.target.value)))}
+                        className="w-full px-2.5 py-1 bg-white dark:bg-[#1E1E1E] border border-slate-300 dark:border-[#30363D] text-slate-900 dark:text-white rounded text-xs font-mono"
                       />
                     </div>
                     <div>
-                      <label className="block text-[10px] text-gray-400 mb-0.5">Performance Bonus</label>
+                      <label className="block text-[10px] text-slate-600 dark:text-gray-400 mb-0.5">Special Allowance</label>
                       <input
                         type="number"
-                        value={incentiveBonus}
-                        onChange={(e) => setIncentiveBonus(Number(e.target.value) || 0)}
-                        className="w-full px-2.5 py-1 bg-[#1E1E1E] border border-[#30363D] text-white rounded text-xs font-mono"
+                        min="0"
+                        value={specialAllowance || ''}
+                        placeholder="0"
+                        onChange={(e) => setSpecialAllowance(Math.max(0, Number(e.target.value) || 0))}
+                        className="w-full px-2.5 py-1 bg-white dark:bg-[#1E1E1E] border border-slate-300 dark:border-[#30363D] text-slate-900 dark:text-white rounded text-xs font-mono"
                       />
                     </div>
                     <div>
-                      <label className="block text-[10px] text-gray-400 mb-0.5">Prof. Tax (PT)</label>
+                      <label className="block text-[10px] text-slate-600 dark:text-gray-400 mb-0.5">Performance Bonus</label>
                       <input
                         type="number"
-                        value={profTax}
-                        onChange={(e) => setProfTax(Number(e.target.value) || 0)}
-                        className="w-full px-2.5 py-1 bg-[#1E1E1E] border border-[#30363D] text-white rounded text-xs font-mono"
+                        min="0"
+                        value={incentiveBonus || ''}
+                        placeholder="0"
+                        onChange={(e) => setIncentiveBonus(Math.max(0, Number(e.target.value) || 0))}
+                        className="w-full px-2.5 py-1 bg-white dark:bg-[#1E1E1E] border border-slate-300 dark:border-[#30363D] text-slate-900 dark:text-white rounded text-xs font-mono"
                       />
                     </div>
                     <div>
-                      <label className="block text-[10px] text-gray-400 mb-0.5">TDS / Income Tax</label>
+                      <label className="block text-[10px] text-slate-600 dark:text-gray-400 mb-0.5">Provident Fund (PF)</label>
                       <input
                         type="number"
-                        value={tdsDeduction}
-                        onChange={(e) => setTdsDeduction(Number(e.target.value) || 0)}
-                        className="w-full px-2.5 py-1 bg-[#1E1E1E] border border-[#30363D] text-white rounded text-xs font-mono"
+                        min="0"
+                        value={customPf}
+                        placeholder="0"
+                        onChange={(e) => setCustomPf(e.target.value === '' ? '' : Math.max(0, Number(e.target.value)))}
+                        className="w-full px-2.5 py-1 bg-white dark:bg-[#1E1E1E] border border-slate-300 dark:border-[#30363D] text-slate-900 dark:text-white rounded text-xs font-mono"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-[10px] text-slate-600 dark:text-gray-400 mb-0.5">Prof. Tax (PT)</label>
+                      <input
+                        type="number"
+                        min="0"
+                        value={profTax || ''}
+                        placeholder="0"
+                        onChange={(e) => setProfTax(Math.max(0, Number(e.target.value) || 0))}
+                        className="w-full px-2.5 py-1 bg-white dark:bg-[#1E1E1E] border border-slate-300 dark:border-[#30363D] text-slate-900 dark:text-white rounded text-xs font-mono"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-[10px] text-slate-600 dark:text-gray-400 mb-0.5">TDS / Income Tax</label>
+                      <input
+                        type="number"
+                        min="0"
+                        value={tdsDeduction || ''}
+                        placeholder="0"
+                        onChange={(e) => setTdsDeduction(Math.max(0, Number(e.target.value) || 0))}
+                        className="w-full px-2.5 py-1 bg-white dark:bg-[#1E1E1E] border border-slate-300 dark:border-[#30363D] text-slate-900 dark:text-white rounded text-xs font-mono"
+                      />
+                    </div>
+                    <div className="col-span-2">
+                      <label className="block text-[10px] text-slate-600 dark:text-gray-400 mb-0.5">Other Deductions</label>
+                      <input
+                        type="number"
+                        min="0"
+                        value={otherDeductions || ''}
+                        placeholder="0"
+                        onChange={(e) => setOtherDeductions(Math.max(0, Number(e.target.value) || 0))}
+                        className="w-full px-2.5 py-1 bg-white dark:bg-[#1E1E1E] border border-slate-300 dark:border-[#30363D] text-slate-900 dark:text-white rounded text-xs font-mono"
                       />
                     </div>
                   </div>
@@ -2184,7 +2525,7 @@ export default function UserManagementTab({ currentEmail, currentRole }: UserMan
                     </div>
                     <div>
                       <span className="text-gray-500 font-medium">Date of Joining:</span>{' '}
-                      <span className="font-mono text-gray-800">{selectedSalaryEmployee?.dateOfJoining || selectedSalaryEmployee?.doj || '01-01-2023'}</span>
+                      <span className="font-mono text-gray-800">{selectedSalaryEmployee?.dateOfJoining || selectedSalaryEmployee?.doj || 'N/A'}</span>
                     </div>
                     <div>
                       <span className="text-gray-500 font-medium">Paid Days:</span>{' '}
@@ -2222,14 +2563,18 @@ export default function UserManagementTab({ currentEmail, currentRole }: UserMan
                           <span className="text-gray-600">Basic Pay</span>
                           <span className="font-mono font-semibold">₹{salaryCalculations.basic.toLocaleString('en-IN')}</span>
                         </div>
-                        <div className="flex justify-between py-0.5">
-                          <span className="text-gray-600">House Rent Allowance (HRA)</span>
-                          <span className="font-mono font-semibold">₹{salaryCalculations.hra.toLocaleString('en-IN')}</span>
-                        </div>
-                        <div className="flex justify-between py-0.5">
-                          <span className="text-gray-600">Special Allowance</span>
-                          <span className="font-mono font-semibold">₹{salaryCalculations.specialAllowance.toLocaleString('en-IN')}</span>
-                        </div>
+                        {salaryCalculations.hra > 0 && (
+                          <div className="flex justify-between py-0.5">
+                            <span className="text-gray-600">House Rent Allowance (HRA)</span>
+                            <span className="font-mono font-semibold">₹{salaryCalculations.hra.toLocaleString('en-IN')}</span>
+                          </div>
+                        )}
+                        {salaryCalculations.specialAllowance > 0 && (
+                          <div className="flex justify-between py-0.5">
+                            <span className="text-gray-600">Special Allowance</span>
+                            <span className="font-mono font-semibold">₹{salaryCalculations.specialAllowance.toLocaleString('en-IN')}</span>
+                          </div>
+                        )}
                         {salaryCalculations.incentive > 0 && (
                           <div className="flex justify-between py-0.5">
                             <span className="text-gray-600">Performance Incentive</span>
@@ -2240,14 +2585,18 @@ export default function UserManagementTab({ currentEmail, currentRole }: UserMan
 
                       {/* Right: Deductions */}
                       <div className="p-2 space-y-1">
-                        <div className="flex justify-between py-0.5">
-                          <span className="text-gray-600">Provident Fund (PF)</span>
-                          <span className="font-mono font-semibold text-rose-700">₹{salaryCalculations.pf.toLocaleString('en-IN')}</span>
-                        </div>
-                        <div className="flex justify-between py-0.5">
-                          <span className="text-gray-600">Professional Tax (PT)</span>
-                          <span className="font-mono font-semibold text-rose-700">₹{salaryCalculations.pt.toLocaleString('en-IN')}</span>
-                        </div>
+                        {salaryCalculations.pf > 0 && (
+                          <div className="flex justify-between py-0.5">
+                            <span className="text-gray-600">Provident Fund (PF)</span>
+                            <span className="font-mono font-semibold text-rose-700">₹{salaryCalculations.pf.toLocaleString('en-IN')}</span>
+                          </div>
+                        )}
+                        {salaryCalculations.pt > 0 && (
+                          <div className="flex justify-between py-0.5">
+                            <span className="text-gray-600">Professional Tax (PT)</span>
+                            <span className="font-mono font-semibold text-rose-700">₹{salaryCalculations.pt.toLocaleString('en-IN')}</span>
+                          </div>
+                        )}
                         {salaryCalculations.tds > 0 && (
                           <div className="flex justify-between py-0.5">
                             <span className="text-gray-600">TDS / Income Tax</span>
@@ -2258,6 +2607,11 @@ export default function UserManagementTab({ currentEmail, currentRole }: UserMan
                           <div className="flex justify-between py-0.5">
                             <span className="text-gray-600">Other Deductions</span>
                             <span className="font-mono font-semibold text-rose-700">₹{salaryCalculations.otherDed.toLocaleString('en-IN')}</span>
+                          </div>
+                        )}
+                        {salaryCalculations.totalDeductions === 0 && (
+                          <div className="text-gray-400 italic text-[11px] py-1 text-center">
+                            No deductions applied
                           </div>
                         )}
                       </div>
@@ -2307,9 +2661,9 @@ export default function UserManagementTab({ currentEmail, currentRole }: UserMan
             </div>
 
             {/* Modal Actions Footer */}
-            <div className="flex items-center justify-between pt-3 border-t border-[#2A2A2A] shrink-0">
-              <div className="text-xs text-gray-400 font-mono">
-                Employee: <span className="text-white font-bold">{selectedSalaryEmployee?.name}</span> | Net: <span className="text-[#D4AF37] font-bold">₹{salaryCalculations.netPayable.toLocaleString('en-IN')}</span>
+            <div className="flex items-center justify-between pt-3 border-t border-slate-200 dark:border-[#2A2A2A] shrink-0">
+              <div className="text-xs text-slate-500 dark:text-gray-400 font-mono">
+                Employee: <span className="text-slate-900 dark:text-white font-bold">{selectedSalaryEmployee?.name}</span> | Net: <span className="text-[#B38728] dark:text-[#D4AF37] font-bold">₹{salaryCalculations.netPayable.toLocaleString('en-IN')}</span>
               </div>
 
               <div className="flex items-center gap-3">
@@ -2319,9 +2673,9 @@ export default function UserManagementTab({ currentEmail, currentRole }: UserMan
                     const text = `Solarithm Payslip Summary (${salaryMonth})\nEmployee: ${selectedSalaryEmployee?.name} (${selectedSalaryEmployee?.employeeId})\nDesignation: ${selectedSalaryEmployee?.designation}\nBasic: ₹${salaryCalculations.basic}\nGross Earnings: ₹${salaryCalculations.gross}\nTotal Deductions: ₹${salaryCalculations.totalDeductions}\nNet Take-Home: ₹${salaryCalculations.netPayable}\nBank: ${selectedSalaryEmployee?.bankName} (A/C: ${selectedSalaryEmployee?.accountNumber})`;
                     copyToClipboard(text, 'salary-summary');
                   }}
-                  className="px-3.5 py-2 bg-[#161B22] hover:bg-[#2A2A2A] border border-[#30363D] text-gray-300 text-xs font-semibold rounded-lg transition-all flex items-center gap-1.5 cursor-pointer"
+                  className="px-3.5 py-2 bg-slate-100 hover:bg-slate-200 dark:bg-[#161B22] dark:hover:bg-[#2A2A2A] border border-slate-300 dark:border-[#30363D] text-slate-700 dark:text-gray-300 text-xs font-semibold rounded-lg transition-all flex items-center gap-1.5 cursor-pointer"
                 >
-                  {copiedId === 'salary-summary' ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
+                  {copiedId === 'salary-summary' ? <Check className="w-3.5 h-3.5 text-emerald-500" /> : <Copy className="w-3.5 h-3.5" />}
                   <span>{copiedId === 'salary-summary' ? 'Copied' : 'Copy Summary'}</span>
                 </button>
 
@@ -2362,7 +2716,7 @@ export default function UserManagementTab({ currentEmail, currentRole }: UserMan
         onClose={() => setIsWipeModalOpen(false)}
         onConfirm={executeWipeEmployeeData}
         title="Wipe All Employee Data"
-        message="This will permanently delete ALL employee records in this module from Firestore. This action cannot be undone."
+        message="This will permanently delete ALL employee records in this module. This action cannot be undone."
         confirmText="Wipe All Records"
         variant="danger"
         requireConfirmationText="WIPE"

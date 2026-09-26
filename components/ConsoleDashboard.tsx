@@ -339,7 +339,7 @@ export default function ConsoleDashboard({ email, role, name, onNavigateTab }: C
       id: 'metric-card-registered-apps',
       title: 'Registered Apps',
       count: metrics.registeredApps,
-      description: 'Active in app registry',
+      description: 'Total Configured',
       icon: Blocks,
       accentColor: 'text-sky-400',
       borderColor: 'border-sky-500/30',

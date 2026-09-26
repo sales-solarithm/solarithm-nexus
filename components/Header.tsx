@@ -65,11 +65,11 @@ export default function Header({
 
       {/* Right Side: DB Status + User Info + Logout */}
       <div className="flex items-center gap-2 sm:gap-4 md:gap-6 shrink-0">
-        {/* Firestore Connection Badge */}
+        {/* Connection Status Badge */}
         <div className="hidden sm:flex items-center gap-1.5 px-2.5 py-1.5 bg-[#2A2A2A] rounded-xl text-sm">
           <div className={`w-1.5 h-1.5 rounded-full ${dbConnected ? 'bg-emerald-500/10 animate-pulse' : 'bg-amber-500/10'}`} />
           <span className="text-xs font-mono text-gray-400">
-            Firestore: <span className={dbConnected ? 'text-emerald-400' : 'text-amber-400'}>{dbConnected ? 'Active' : 'Connecting'}</span>
+            Database: <span className={dbConnected ? 'text-emerald-400' : 'text-amber-400'}>{dbConnected ? 'Active' : 'Connecting'}</span>
           </span>
         </div>
 
