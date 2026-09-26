@@ -1,8 +1,9 @@
 'use client';
 
 import React from 'react';
-import { Sun, LogOut, User, X, Menu } from 'lucide-react';
+import { Sun, Moon, LogOut, User, X, Menu } from 'lucide-react';
 import { SUPER_ADMIN_EMAILS, UserRole } from '@/lib/firebase';
+import { useTheme } from '@/components/ThemeProvider';
 
 interface HeaderProps {
   email: string;
@@ -24,6 +25,7 @@ export default function Header({
   onToggleMobileNav
 }: HeaderProps) {
   const isSuperAdmin = SUPER_ADMIN_EMAILS.includes(email.toLowerCase());
+  const { theme, toggleTheme } = useTheme();
 
   return (
     <header className="h-16 bg-[#1E1E1E] border-b border-[#2A2A2A] px-3 sm:px-6 md:px-8 flex items-center justify-between sticky top-0 z-30 w-full min-w-0">
@@ -96,6 +98,25 @@ export default function Header({
         </div>
 
         <div className="h-5 w-px bg-[#333333] hidden sm:block" />
+
+        {/* Theme Toggle Button (Light / Dark) */}
+        <button
+          type="button"
+          onClick={toggleTheme}
+          title={theme === 'dark' ? 'Switch to Light Mode' : 'Switch to Dark Mode'}
+          aria-label={theme === 'dark' ? 'Switch to Light Mode' : 'Switch to Dark Mode'}
+          className="flex items-center gap-1.5 px-2.5 sm:px-3 py-1.5 sm:py-2 bg-[#2A2A2A] hover:bg-[#333333] text-gray-200 hover:text-[#D4AF37] rounded-lg transition-all cursor-pointer shadow-sm border border-[#333333] group"
+          id="header-theme-toggle-btn"
+        >
+          {theme === 'dark' ? (
+            <Sun className="w-4 h-4 text-[#D4AF37] group-hover:rotate-45 transition-transform duration-300" />
+          ) : (
+            <Moon className="w-4 h-4 text-indigo-400 group-hover:-rotate-12 transition-transform duration-300" />
+          )}
+          <span className="hidden lg:inline text-xs font-semibold">
+            {theme === 'dark' ? 'Light' : 'Dark'}
+          </span>
+        </button>
 
         {/* Logout Button */}
         <button

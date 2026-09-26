@@ -37,7 +37,8 @@ import {
   doc, 
   setDoc, 
   deleteDoc, 
-  writeBatch 
+  writeBatch,
+  onSnapshot 
 } from 'firebase/firestore';
 
 interface ProposalManagementTabProps {
@@ -70,6 +71,73 @@ export default function ProposalManagementTab({ currentEmail, currentRole }: Pro
   });
   const [submitting, setSubmitting] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
+
+  // Dynamic pricing categories fetched from live database (synced with Client Pricing Matrix)
+  const [dynamicPricingCategories, setDynamicPricingCategories] = useState<string[]>([]);
+  const [loadingCategories, setLoadingCategories] = useState(true);
+
+  // Real-time synchronization with Client Pricing Matrix categories (PRICING_RULES & PRICING_CATEGORIES)
+  useEffect(() => {
+    let rulesCategories: string[] = [];
+    let explicitCategories: string[] = [];
+
+    const updateCombined = () => {
+      const merged = Array.from(new Set([...rulesCategories, ...explicitCategories]))
+        .map(c => (c || '').trim())
+        .filter(Boolean);
+
+      merged.sort((a, b) => a.localeCompare(b, undefined, { numeric: true, sensitivity: 'base' }));
+
+      setDynamicPricingCategories(merged.length > 0 ? merged : DEFAULT_PRICING_CATEGORIES);
+      setLoadingCategories(false);
+    };
+
+    // 1. Listen to pricingRules collection (same collection used by Client Pricing Matrix tab)
+    const unsubRules = onSnapshot(
+      collection(db, COLLECTIONS.PRICING_RULES),
+      (snap) => {
+        const cats: string[] = [];
+        snap.forEach((d) => {
+          const data = d.data();
+          if (data?.category && typeof data.category === 'string') {
+            cats.push(data.category.trim());
+          }
+        });
+        rulesCategories = cats;
+        updateCombined();
+      },
+      (err) => {
+        console.error('Error in pricingRules snapshot for categories:', err);
+        setLoadingCategories(false);
+      }
+    );
+
+    // 2. Listen to pricingCategories collection
+    const unsubCategories = onSnapshot(
+      collection(db, COLLECTIONS.PRICING_CATEGORIES),
+      (snap) => {
+        const cats: string[] = [];
+        snap.forEach((d) => {
+          const data = d.data();
+          const name = data?.name || d.id;
+          if (name && typeof name === 'string') {
+            cats.push(name.trim());
+          }
+        });
+        explicitCategories = cats;
+        updateCombined();
+      },
+      (err) => {
+        console.error('Error in pricingCategories snapshot:', err);
+        setLoadingCategories(false);
+      }
+    );
+
+    return () => {
+      unsubRules();
+      unsubCategories();
+    };
+  }, []);
 
   // Delete modal state
   const [proposalToDelete, setProposalToDelete] = useState<ProposalDocument | null>(null);
@@ -185,7 +253,7 @@ export default function ProposalManagementTab({ currentEmail, currentRole }: Pro
     setEditingProposalId(null);
     setFormData({
       proposalNumber: '',
-      pricingCategory: 'T1'
+      pricingCategory: dynamicPricingCategories.length > 0 ? dynamicPricingCategories[0] : 'T1'
     });
     setFormError(null);
     setIsModalOpen(true);
@@ -195,7 +263,7 @@ export default function ProposalManagementTab({ currentEmail, currentRole }: Pro
     setEditingProposalId(item.id || null);
     setFormData({
       proposalNumber: item.proposalNumber || '',
-      pricingCategory: item.pricingCategory || 'T1'
+      pricingCategory: item.pricingCategory || (dynamicPricingCategories.length > 0 ? dynamicPricingCategories[0] : 'T1')
     });
     setFormError(null);
     setIsModalOpen(true);
@@ -223,9 +291,10 @@ export default function ProposalManagementTab({ currentEmail, currentRole }: Pro
 
     setSubmitting(true);
     try {
+      const effectiveCategory = formData.pricingCategory || (dynamicPricingCategories.length > 0 ? dynamicPricingCategories[0] : 'T1');
       const payload: ProposalDocument = {
         proposalNumber: propNum,
-        pricingCategory: formData.pricingCategory,
+        pricingCategory: effectiveCategory,
         createdAt: new Date().toISOString()
       };
 
@@ -641,19 +710,32 @@ export default function ProposalManagementTab({ currentEmail, currentRole }: Pro
               </div>
 
               <div>
-                <label className="block text-sm font-semibold text-gray-200 mb-1.5 uppercase tracking-wider">
-                  Linked Pricing Category
+                <label className="block text-sm font-semibold text-gray-200 mb-1.5 uppercase tracking-wider flex items-center justify-between">
+                  <span>Linked Pricing Category</span>
+                  {loadingCategories && (
+                    <span className="text-xs text-[#D4AF37] font-normal flex items-center gap-1 font-sans lowercase">
+                      <RefreshCw className="w-3 h-3 animate-spin" /> syncing...
+                    </span>
+                  )}
                 </label>
                 <select
-                  value={formData.pricingCategory}
+                  value={formData.pricingCategory || (dynamicPricingCategories.length > 0 ? dynamicPricingCategories[0] : 'T1')}
                   onChange={(e) => setFormData({ ...formData, pricingCategory: e.target.value as PricingCategory })}
-                  className="w-full px-3.5 py-2.5 bg-[#2A2A2A] border border-[#2A2A2A] focus:border-[#D4AF37] rounded-xl text-sm text-amber-400 focus:outline-none font-mono"
+                  disabled={loadingCategories && dynamicPricingCategories.length === 0}
+                  className="w-full px-3.5 py-2.5 bg-[#2A2A2A] border border-[#2A2A2A] focus:border-[#D4AF37] rounded-xl text-sm text-amber-400 focus:outline-none font-mono cursor-pointer"
                 >
-                  {DEFAULT_PRICING_CATEGORIES.map((cat) => (
-                    <option key={cat} value={cat}>
-                      {cat}
-                    </option>
-                  ))}
+                  {Array.from(
+                    new Set([
+                      ...dynamicPricingCategories,
+                      ...(formData.pricingCategory ? [formData.pricingCategory] : [])
+                    ])
+                  )
+                    .filter(Boolean)
+                    .map((cat) => (
+                      <option key={cat} value={cat}>
+                        {cat}
+                      </option>
+                    ))}
                 </select>
               </div>
 

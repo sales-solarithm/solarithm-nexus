@@ -23,3 +23,206 @@
 ::-webkit-scrollbar-thumb:hover {
   background: #D4AF37;
 }
+
+/* ==========================================================================
+   LIGHT MODE THEME STYLES
+   Clean, high-contrast, professional light theme matching the Project Entry tool.
+   ========================================================================== */
+
+html.light,
+html.light body {
+  background-color: #F8FAFC !important;
+  color: #0F172A !important;
+}
+
+/* Root & App Level Layout Containers */
+html.light main,
+html.light .bg-\[\#121212\],
+html.light [class*="bg-[#121212]"] {
+  background-color: #F8FAFC !important;
+}
+
+/* Primary Cards, Header, Sidebar, Modals, Tables */
+html.light header,
+html.light aside,
+html.light .bg-\[\#1E1E1E\],
+html.light .bg-\[\#1C1C1C\],
+html.light [class*="bg-[#1E1E1E]"],
+html.light [class*="bg-[#1C1C1C]"] {
+  background-color: #FFFFFF !important;
+}
+
+/* Subtle Wells, Secondary Surfaces, Badges, Table Rows */
+html.light .bg-\[\#141414\],
+html.light .bg-\[\#161616\],
+html.light .bg-\[\#181818\],
+html.light .bg-\[\#1A1A1A\],
+html.light .bg-\[\#202020\],
+html.light .bg-\[\#222222\],
+html.light .bg-\[\#232323\],
+html.light .bg-\[\#242424\],
+html.light .bg-\[\#252525\],
+html.light .bg-\[\#262626\],
+html.light .bg-\[\#282828\],
+html.light .bg-\[\#2A2A2A\],
+html.light [class*="bg-[#181818]"],
+html.light [class*="bg-[#2A2A2A]"] {
+  background-color: #F1F5F9 !important;
+}
+
+/* Elevated Hover States & Segmented Buttons */
+html.light .bg-\[\#333333\],
+html.light [class*="bg-[#333333]"] {
+  background-color: #E2E8F0 !important;
+}
+
+/* Borders */
+html.light .border-\[\#2A2A2A\],
+html.light .border-\[\#2E2E2E\],
+html.light .border-\[\#30363D\],
+html.light [class*="border-[#2A2A2A]"],
+html.light [class*="border-[#2E2E2E]"] {
+  border-color: #E2E8F0 !important;
+}
+
+html.light .border-\[\#333333\],
+html.light .border-\[\#3A3A3A\],
+html.light .border-\[\#444444\],
+html.light [class*="border-[#333333]"],
+html.light [class*="border-[#3A3A3A]"] {
+  border-color: #CBD5E1 !important;
+}
+
+html.light .divide-\[\#2A2A2A\] > :not([hidden]) ~ :not([hidden]) {
+  border-color: #E2E8F0 !important;
+}
+
+html.light .divide-\[\#333333\] > :not([hidden]) ~ :not([hidden]) {
+  border-color: #CBD5E1 !important;
+}
+
+/* Typography & Contrast */
+html.light .text-white,
+html.light [class*="text-white"] {
+  color: #0F172A !important;
+}
+
+html.light .text-gray-100 {
+  color: #1E293B !important;
+}
+
+html.light .text-gray-200 {
+  color: #334155 !important;
+}
+
+html.light .text-gray-300 {
+  color: #475569 !important;
+}
+
+html.light .text-gray-400 {
+  color: #64748B !important;
+}
+
+html.light .text-gray-500 {
+  color: #64748B !important;
+}
+
+html.light .text-gray-600 {
+  color: #475569 !important;
+}
+
+/* Gold Accent contrast on light mode */
+html.light .text-\[\#D4AF37\],
+html.light [class*="text-[#D4AF37]"] {
+  color: #A16207 !important;
+}
+
+html.light .text-amber-400 {
+  color: #B45309 !important;
+}
+
+html.light .text-\[\#FBF5B7\] {
+  color: #854D0E !important;
+}
+
+/* Keep solid colored button labels readable */
+html.light .bg-rose-600,
+html.light .bg-red-600,
+html.light .bg-emerald-600,
+html.light .bg-green-600,
+html.light .bg-blue-600,
+html.light .bg-indigo-600 {
+  color: #FFFFFF !important;
+}
+
+html.light .bg-rose-600 *,
+html.light .bg-red-600 *,
+html.light .bg-emerald-600 *,
+html.light .bg-green-600 *,
+html.light .bg-blue-600 *,
+html.light .bg-indigo-600 * {
+  color: #FFFFFF !important;
+}
+
+/* Interactive Hover States */
+html.light .hover\:bg-\[\#333333\]:hover {
+  background-color: #E2E8F0 !important;
+}
+
+html.light .hover\:bg-\[\#2A2A2A\]:hover {
+  background-color: #F1F5F9 !important;
+}
+
+html.light .hover\:text-white:hover {
+  color: #0F172A !important;
+}
+
+/* Form Controls (Inputs, Selects, Textareas) */
+html.light input:not([type="checkbox"]):not([type="radio"]):not([type="submit"]):not([type="button"]),
+html.light select,
+html.light textarea {
+  background-color: #FFFFFF !important;
+  border-color: #CBD5E1 !important;
+  color: #0F172A !important;
+}
+
+html.light input::placeholder,
+html.light textarea::placeholder {
+  color: #94A3B8 !important;
+}
+
+html.light select option {
+  background-color: #FFFFFF !important;
+  color: #0F172A !important;
+}
+
+/* Modal Backdrops & Shadows */
+html.light .bg-black\/80,
+html.light .bg-black\/70,
+html.light .bg-black\/60,
+html.light .bg-black\/50 {
+  background-color: rgba(15, 23, 42, 0.45) !important;
+}
+
+html.light .shadow-2xl {
+  box-shadow: 0 25px 50px -12px rgba(15, 23, 42, 0.15), 0 0 0 1px rgba(15, 23, 42, 0.05) !important;
+}
+
+html.light .shadow-xl {
+  box-shadow: 0 20px 25px -5px rgba(15, 23, 42, 0.1), 0 8px 10px -6px rgba(15, 23, 42, 0.05) !important;
+}
+
+html.light .shadow-md {
+  box-shadow: 0 4px 6px -1px rgba(15, 23, 42, 0.07), 0 2px 4px -2px rgba(15, 23, 42, 0.04) !important;
+}
+
+/* Light Mode Scrollbars */
+html.light ::-webkit-scrollbar-track {
+  background: #F1F5F9;
+}
+html.light ::-webkit-scrollbar-thumb {
+  background: #CBD5E1;
+}
+html.light ::-webkit-scrollbar-thumb:hover {
+  background: #B38728;
+}

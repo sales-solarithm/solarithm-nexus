@@ -6,6 +6,7 @@ import {
   Mail, 
   ArrowRight, 
   Sun, 
+  Moon, 
   Eye, 
   EyeOff, 
   AlertCircle
@@ -21,6 +22,7 @@ import {
   verifyOwnerRole, 
   UserRole 
 } from '@/lib/firebase';
+import { useTheme } from '@/components/ThemeProvider';
 
 interface LoginScreenProps {
   onLoginSuccess: (user: { email: string; role: UserRole; name: string }) => void;
@@ -28,6 +30,7 @@ interface LoginScreenProps {
 }
 
 export default function LoginScreen({ onLoginSuccess, initialError }: LoginScreenProps) {
+  const { theme, toggleTheme } = useTheme();
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
@@ -125,6 +128,26 @@ export default function LoginScreen({ onLoginSuccess, initialError }: LoginScree
 
   return (
     <div className="min-h-screen w-full bg-[#121212] flex items-center justify-center p-4 relative overflow-hidden select-none">
+      {/* Top right theme toggle */}
+      <div className="absolute top-4 right-4 z-20">
+        <button
+          type="button"
+          onClick={toggleTheme}
+          title={theme === 'dark' ? 'Switch to Light Mode' : 'Switch to Dark Mode'}
+          aria-label={theme === 'dark' ? 'Switch to Light Mode' : 'Switch to Dark Mode'}
+          className="p-2.5 bg-[#1E1E1E] hover:bg-[#2A2A2A] text-gray-300 hover:text-[#D4AF37] rounded-xl transition-all cursor-pointer shadow-md border border-[#2E2E2E] flex items-center gap-1.5"
+          id="login-theme-toggle-btn"
+        >
+          {theme === 'dark' ? (
+            <Sun className="w-4 h-4 text-[#D4AF37]" />
+          ) : (
+            <Moon className="w-4 h-4 text-indigo-400" />
+          )}
+          <span className="text-xs font-semibold hidden sm:inline">
+            {theme === 'dark' ? 'Light Mode' : 'Dark Mode'}
+          </span>
+        </button>
+      </div>
       {/* Subtle Ambient Background Accents */}
       <div className="absolute -top-40 -left-40 w-96 h-96 bg-[#D4AF37]/5 rounded-full blur-3xl pointer-events-none" />
       <div className="absolute -bottom-40 -right-40 w-96 h-96 bg-[#B38728]/5 rounded-full blur-3xl pointer-events-none" />
