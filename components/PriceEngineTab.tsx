@@ -282,11 +282,19 @@ export default function PriceEngineTab({ currentEmail, currentRole }: PriceEngin
       title: 'New Pricing Category',
       message: 'Enter new Pricing Category code (e.g. T4):',
       placeholder: 'T4',
-      onSubmit: (name: string) => {
+      onSubmit: async (name: string) => {
         if (name && name.trim() !== '') {
           const cat = name.trim().toUpperCase();
           setManualCategories(prev => Array.from(new Set([...prev, cat])));
           setSelectedCategory(cat);
+          try {
+            await setDoc(doc(db, COLLECTIONS.PRICING_CATEGORIES, cat), {
+              name: cat,
+              updatedAt: new Date().toISOString()
+            }, { merge: true });
+          } catch (e) {
+            console.warn('Failed to persist new category to pricingCategories:', e);
+          }
         }
       }
     });
@@ -330,6 +338,20 @@ export default function PriceEngineTab({ currentEmail, currentRole }: PriceEngin
       const snap = await getDocs(collection(db, COLLECTIONS.PRICING_RULES));
       const rules = snap.docs.map(d => ({ ...d.data(), id: d.id } as PricingRuleDocument & { id: string }));
       setAllRules(rules);
+
+      try {
+        const catSnap = await getDocs(collection(db, COLLECTIONS.PRICING_CATEGORIES));
+        const catsFromDb: string[] = [];
+        catSnap.forEach(d => {
+          const val = d.data()?.name || d.id;
+          if (val) catsFromDb.push(String(val).trim().toUpperCase());
+        });
+        if (catsFromDb.length > 0) {
+          setManualCategories(prev => Array.from(new Set([...prev, ...catsFromDb])));
+        }
+      } catch (catErr) {
+        console.warn('Could not fetch pricing categories collection:', catErr);
+      }
     } catch (err) {
       console.error('Error fetching all rules:', err);
       setErrorMsg('Failed to load pricing matrix.');
@@ -567,6 +589,17 @@ export default function PriceEngineTab({ currentEmail, currentRole }: PriceEngin
           await batch.commit();
         }
 
+        // Clean up any pricing rules for this category
+        const rulesSnap = await getDocs(query(collection(db, COLLECTIONS.PRICING_RULES), where('category', '==', catName)));
+        if (!rulesSnap.empty) {
+          const rBatch = writeBatch(db);
+          rulesSnap.docs.forEach((d) => {
+            rBatch.delete(doc(db, COLLECTIONS.PRICING_RULES, d.id));
+          });
+          await rBatch.commit();
+        }
+
+        setManualCategories(prev => prev.filter(c => c !== catName));
         setSuccessMsg(`Category "${catName}" deleted successfully.`);
 
         if (selectedCategory === catName) {

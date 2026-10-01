@@ -137,6 +137,8 @@ export default function ApprovalsTab({ currentEmail, currentRole }: ApprovalsTab
   const [clientToApprove, setClientToApprove] = useState<ClientDocument | null>(null);
   const [assignedCategory, setAssignedCategory] = useState<PricingCategory>('T1');
   const [approvingClient, setApprovingClient] = useState(false);
+  const [dynamicPricingCategories, setDynamicPricingCategories] = useState<string[]>([]);
+  const [loadingCategories, setLoadingCategories] = useState(true);
   const [actioningChangeId, setActioningChangeId] = useState<string | null>(null);
   const [isDeleting, setIsDeleting] = useState(false);
   const [deleteModalState, setDeleteModalState] = useState<{
@@ -212,14 +214,126 @@ export default function ApprovalsTab({ currentEmail, currentRole }: ApprovalsTab
       const map: Record<string, PricingCategory> = {};
       snap.forEach((docSnap) => {
         const data = docSnap.data() as ProposalDocument;
-        if (data.proposalNumber && data.pricingCategory) {
-          map[data.proposalNumber.toUpperCase()] = data.pricingCategory;
+        const propCat = data.pricingCategory || (data as any).category;
+        if (data.proposalNumber && propCat) {
+          map[data.proposalNumber.toUpperCase()] = propCat;
         }
       });
       setProposalsMap(map);
     } catch (err) {
       console.error('Error loading proposals map:', err);
     }
+  }, []);
+
+  // Real-time synchronization of pricing categories from Price Engine (pricingRules & pricingCategories)
+  useEffect(() => {
+    let rulesCategories: string[] = [];
+    let explicitCategories: string[] = [];
+    let hasLoadedRules = false;
+    let hasLoadedExplicit = false;
+
+    const updateCombined = () => {
+      const map = new Map<string, string>();
+      [...rulesCategories, ...explicitCategories].forEach((cat) => {
+        if (!cat) return;
+        const trimmed = String(cat).trim();
+        if (!trimmed || trimmed.toLowerCase() === 'n/a' || trimmed.toLowerCase() === 'nil') return;
+        const key = trimmed.toLowerCase();
+        if (!map.has(key)) {
+          map.set(key, trimmed);
+        } else {
+          const existing = map.get(key)!;
+          if (trimmed === trimmed.toUpperCase() && existing !== existing.toUpperCase()) {
+            map.set(key, trimmed);
+          }
+        }
+      });
+
+      const distinct = Array.from(map.values()).sort((a, b) =>
+        a.localeCompare(b, undefined, { numeric: true, sensitivity: 'base' })
+      );
+
+      // Safe fallback to default categories only if remote collections are completely empty
+      if (distinct.length > 0) {
+        setDynamicPricingCategories(distinct);
+      } else {
+        setDynamicPricingCategories(DEFAULT_PRICING_CATEGORIES);
+      }
+
+      if (hasLoadedRules && hasLoadedExplicit) {
+        setLoadingCategories(false);
+      }
+    };
+
+    // 1. Listen to pricingRules collection (same collection managed by Price Engine)
+    const unsubRules = onSnapshot(
+      collection(db, COLLECTIONS.PRICING_RULES),
+      (snap) => {
+        hasLoadedRules = true;
+        const cats: string[] = [];
+        snap.forEach((d) => {
+          const data = d.data();
+          if (data?.category && typeof data.category === 'string') {
+            cats.push(data.category.trim());
+          }
+        });
+        rulesCategories = cats;
+        updateCombined();
+      },
+      (err) => {
+        console.error('Error in pricingRules snapshot for categories:', err);
+        hasLoadedRules = true;
+        updateCombined();
+      }
+    );
+
+    // 2. Listen to pricingCategories collection
+    const unsubCategories = onSnapshot(
+      collection(db, COLLECTIONS.PRICING_CATEGORIES),
+      (snap) => {
+        hasLoadedExplicit = true;
+        const cats: string[] = [];
+        snap.forEach((d) => {
+          const data = d.data();
+          const name = data?.name || d.id;
+          if (name && typeof name === 'string') {
+            cats.push(name.trim());
+          }
+        });
+        explicitCategories = cats;
+        updateCombined();
+      },
+      (err) => {
+        console.error('Error in pricingCategories snapshot:', err);
+        hasLoadedExplicit = true;
+        updateCombined();
+      }
+    );
+
+    // 3. Real-time sync for proposals collection
+    const unsubProposals = onSnapshot(
+      collection(db, COLLECTIONS.PROPOSALS),
+      (snap) => {
+        const map: Record<string, PricingCategory> = {};
+        snap.forEach((docSnap) => {
+          const data = docSnap.data() as ProposalDocument;
+          const propCat = data.pricingCategory || (data as any).category;
+          if (data.proposalNumber && propCat) {
+            map[data.proposalNumber.toUpperCase()] = propCat;
+          }
+        });
+        setProposalsMap(map);
+      },
+      (err) => {
+        console.error('Error in proposals snapshot:', err);
+      }
+    );
+
+    return () => {
+      unsubRules();
+      unsubCategories();
+      unsubProposals();
+    };
   }, []);
 
   // Load pending change requests where status == 'pending'
@@ -615,12 +729,25 @@ export default function ApprovalsTab({ currentEmail, currentRole }: ApprovalsTab
   // Open Client Approve Modal
   const openApproveClientModal = (client: ClientDocument) => {
     setClientToApprove(client);
+    const availableCategories = dynamicPricingCategories.length > 0 
+      ? dynamicPricingCategories 
+      : DEFAULT_PRICING_CATEGORIES;
+
     // Auto capture category from proposal number if available
-    let categoryToUse: PricingCategory = 'T1';
+    let categoryToUse: PricingCategory = '';
     if (client.proposalNumber) {
       const matched = proposalsMap[client.proposalNumber.toUpperCase()];
       if (matched) {
         categoryToUse = matched;
+      }
+    }
+    if (!categoryToUse) {
+      if (client.pricingCategory) {
+        categoryToUse = client.pricingCategory;
+      } else if (availableCategories.length > 0) {
+        categoryToUse = availableCategories[0];
+      } else {
+        categoryToUse = 'T1';
       }
     }
     setAssignedCategory(categoryToUse);
@@ -636,13 +763,77 @@ export default function ApprovalsTab({ currentEmail, currentRole }: ApprovalsTab
       console.log("Saving to collection: clients");
       
       const clientRef = doc(db, COLLECTIONS.CLIENTS, clientToApprove.id);
-      await updateDoc(clientRef, {
+      const clientUpdatePayload: Record<string, any> = {
         [CLIENT_FIELDS.STATUS]: CLIENT_STATUS.APPROVED,
         [CLIENT_FIELDS.PRICING_CATEGORY]: assignedCategory,
-        approvedAt: new Date(),
+        approvedAt: new Date().toISOString(),
         approvedBy: currentEmail
-      });
+      };
+
+      // Retain the linked proposal reference intact on the client doc
+      if (clientToApprove.proposalNumber) {
+        clientUpdatePayload[CLIENT_FIELDS.PROPOSAL_NUMBER] = clientToApprove.proposalNumber;
+      }
+
+      await updateDoc(clientRef, clientUpdatePayload);
       console.log("Client approved successfully");
+
+      // Update category / pricingCategory on the linked proposal document
+      const propNumber = clientToApprove.proposalNumber?.trim();
+      if (propNumber) {
+        try {
+          const propUpper = propNumber.toUpperCase();
+          const proposalsRef = collection(db, COLLECTIONS.PROPOSALS);
+
+          // 1. Query by exact proposalNumber field
+          const propQuery = query(proposalsRef, where('proposalNumber', '==', propNumber));
+          const propSnap = await getDocs(propQuery);
+
+          if (!propSnap.empty) {
+            for (const pDoc of propSnap.docs) {
+              await setDoc(doc(db, COLLECTIONS.PROPOSALS, pDoc.id), {
+                pricingCategory: assignedCategory,
+                category: assignedCategory,
+                updatedAt: new Date().toISOString()
+              }, { merge: true });
+            }
+          } else {
+            // 2. Query case-insensitively or check sanitized doc ID
+            const sanitizedKey = propNumber.toLowerCase().replace(/[^a-z0-9]/g, '_');
+            const allPropsSnap = await getDocs(proposalsRef);
+            let matchedDocId: string | null = null;
+
+            allPropsSnap.forEach((d) => {
+              const data = d.data();
+              if (
+                d.id === sanitizedKey ||
+                (data.proposalNumber && data.proposalNumber.trim().toUpperCase() === propUpper)
+              ) {
+                matchedDocId = d.id;
+              }
+            });
+
+            if (matchedDocId) {
+              await setDoc(doc(db, COLLECTIONS.PROPOSALS, matchedDocId), {
+                pricingCategory: assignedCategory,
+                category: assignedCategory,
+                updatedAt: new Date().toISOString()
+              }, { merge: true });
+            } else {
+              // Create linked proposal document with merge: true retaining proposal reference
+              await setDoc(doc(db, COLLECTIONS.PROPOSALS, sanitizedKey), {
+                proposalNumber: propNumber,
+                pricingCategory: assignedCategory,
+                category: assignedCategory,
+                createdAt: new Date().toISOString(),
+                updatedAt: new Date().toISOString()
+              }, { merge: true });
+            }
+          }
+        } catch (propErr) {
+          console.error('Error updating linked proposal category:', propErr);
+        }
+      }
 
       setSuccessMsg(`Client "${clientToApprove.companyName}" approved with Pricing Category ${assignedCategory}.`);
       setClientToApprove(null);
@@ -1619,17 +1810,29 @@ export default function ApprovalsTab({ currentEmail, currentRole }: ApprovalsTab
               <select
                 value={assignedCategory}
                 onChange={(e) => setAssignedCategory(e.target.value as PricingCategory)}
-                className="w-full px-3.5 py-2.5 bg-[#2A2A2A] border border-[#2A2A2A] focus:border-[#D4AF37] rounded-xl text-sm text-amber-400 focus:outline-none font-mono"
+                disabled={loadingCategories}
+                className="w-full px-3.5 py-2.5 bg-[#2A2A2A] border border-[#2A2A2A] focus:border-[#D4AF37] rounded-xl text-sm text-amber-400 focus:outline-none font-mono disabled:opacity-60 cursor-pointer"
               >
-                {DEFAULT_PRICING_CATEGORIES.map((cat) => (
-                  <option key={cat} value={cat}>
-                    {cat}
-                  </option>
-                ))}
+                {loadingCategories ? (
+                  <option value="" disabled>Loading categories...</option>
+                ) : (
+                  (dynamicPricingCategories.length > 0 ? dynamicPricingCategories : DEFAULT_PRICING_CATEGORIES).map((cat) => (
+                    <option key={cat} value={cat}>
+                      {cat}
+                    </option>
+                  ))
+                )}
               </select>
-              <p className="text-xs text-gray-500 mt-1">
-                Captured automatically from proposal mapping if proposal number is registered.
-              </p>
+              {loadingCategories ? (
+                <p className="text-xs text-amber-400/80 mt-1 flex items-center gap-1.5 animate-pulse">
+                  <RefreshCw className="w-3 h-3 animate-spin" />
+                  Loading categories...
+                </p>
+              ) : (
+                <p className="text-xs text-gray-400 mt-1">
+                  Captured automatically from proposal mapping if proposal number is registered.
+                </p>
+              )}
             </div>
 
             <div className="pt-3 flex items-center justify-end gap-3 border-t border-[#2A2A2A]">
