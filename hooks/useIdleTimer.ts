@@ -2,14 +2,14 @@
 
 import { useEffect, useRef, useCallback } from 'react';
 
-/** Strictly 10 minutes = 600,000 milliseconds */
-export const INACTIVITY_TIMEOUT_MS = 10 * 60 * 1000;
+/** Strictly 15 minutes = 900,000 milliseconds */
+export const INACTIVITY_TIMEOUT_MS = 15 * 60 * 1000;
 
 /** Throttle event handler to prevent CPU overhead (1,000ms) */
 export const ACTIVITY_THROTTLE_MS = 1000;
 
 export interface UseIdleTimerOptions {
-  /** Inactivity timeout duration in milliseconds. Defaults to 600,000ms (10 minutes) */
+  /** Inactivity timeout duration in milliseconds. Defaults to 900,000ms (15 minutes) */
   timeoutMs?: number;
   /** Activity throttling interval in milliseconds. Defaults to 1,000ms */
   throttleMs?: number;

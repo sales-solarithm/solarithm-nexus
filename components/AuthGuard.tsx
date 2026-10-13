@@ -65,12 +65,12 @@ export default function AuthGuard({ children }: AuthGuardProps) {
     }
 
     setSession(null);
-    setSessionExpiredNotice('Session expired due to 10 minutes of inactivity. Please log in again.');
+    setSessionExpiredNotice('Session expired due to 15 minutes of inactivity. Please log in again.');
   }, []);
 
   // Monitor idle time when a user session is active
   const { resetTimer } = useIdleTimer({
-    timeoutMs: INACTIVITY_TIMEOUT_MS, // 600,000 ms = strictly 10 minutes
+    timeoutMs: INACTIVITY_TIMEOUT_MS, // 900,000 ms = strictly 15 minutes
     throttleMs: ACTIVITY_THROTTLE_MS, // 1,000 ms throttle to protect CPU
     onIdle: handleInactivityLogout,
     enabled: !!session,

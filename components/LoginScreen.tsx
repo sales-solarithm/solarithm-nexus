@@ -19,8 +19,10 @@ import {
 } from 'firebase/auth';
 import { 
   auth, 
-  verifyOwnerRole, 
-  UserRole 
+  UserRole,
+  isOwnerEmail,
+  SUPER_ADMIN_EMAILS,
+  verifyUserCredentials
 } from '@/lib/firebase';
 import { useTheme } from '@/components/ThemeProvider';
 
@@ -44,7 +46,7 @@ export default function LoginScreen({ onLoginSuccess, initialError }: LoginScree
   const handleAuth = async (e?: React.FormEvent) => {
     if (e) e.preventDefault();
 
-    const cleanEmail = email.trim();
+    const cleanEmail = email.trim().toLowerCase();
     if (!cleanEmail || !cleanEmail.includes('@')) {
       setErrorMsg('Please enter a valid email address.');
       return;
@@ -75,51 +77,66 @@ export default function LoginScreen({ onLoginSuccess, initialError }: LoginScree
         throw new Error('Authentication returned an invalid user profile.');
       }
 
-      // 3. Move clearance check: Trigger "Verifying Owner Clearance..." state only after submission
+      // 3. Trigger Clearance Verification
       setVerifyingClearance(true);
 
-      // 4. Verify Owner role against Firestore
-      const roleCheck = await verifyOwnerRole(firebaseUser.email);
+      // 4. Verify clearance for Nexus Admin Console (Exclusive to Owners and Admins)
+      const credResult = await verifyUserCredentials(cleanEmail);
+      const isDirectOwner = isOwnerEmail(cleanEmail) || SUPER_ADMIN_EMAILS.includes(cleanEmail);
+      
+      const userRole = (credResult.user?.role || '').toLowerCase();
+      const isAuthorizedRole = isDirectOwner || userRole === 'owner' || userRole === 'admin' || userRole === 'super_admin';
 
-      if (!roleCheck.isOwner || !roleCheck.user) {
-        // Block Unauthorized Access: Immediately sign out and display error
+      if (!isAuthorizedRole) {
         await signOut(auth);
         setVerifyingClearance(false);
-        setErrorMsg(
-          roleCheck.error || 
-          'Access Denied: Insufficient Permissions. Only verified Owner accounts are authorized.'
-        );
+        setErrorMsg('Access Denied: Nexus Admin Console is exclusively restricted to authorized Owners and Admins.');
         return;
       }
 
-      // Successful Owner Verification
-      const ownerUser = roleCheck.user;
+      const verifiedRole: UserRole = isDirectOwner ? 'owner' : (userRole === 'admin' ? 'admin' : 'owner');
+      const verifiedName = credResult.user?.name || cleanEmail.split('@')[0];
+
+      // 5. Ensure canonical /users/{uid} document synchronization
+      try {
+        const { syncUserDocumentOnLogin } = await import('@/lib/userService');
+        await syncUserDocumentOnLogin({
+          uid: firebaseUser.uid,
+          email: firebaseUser.email,
+          name: verifiedName,
+          role: verifiedRole
+        });
+      } catch (provErr) {
+        console.warn('Could not sync user profile to /users/{uid}:', provErr);
+      }
+
       if (typeof window !== 'undefined') {
-        localStorage.setItem('lockedEmail', ownerUser.email);
-        localStorage.setItem('lockedRole', ownerUser.role);
-        localStorage.setItem('lockedName', ownerUser.name);
+        localStorage.setItem('lockedEmail', cleanEmail);
+        localStorage.setItem('lockedRole', verifiedRole);
+        localStorage.setItem('lockedName', verifiedName);
+        localStorage.setItem('activePortal', 'executive');
       }
 
       onLoginSuccess({
-        email: ownerUser.email,
-        role: ownerUser.role,
-        name: ownerUser.name || 'Owner'
+        email: cleanEmail,
+        role: verifiedRole,
+        name: verifiedName
       });
     } catch (err: any) {
-      console.error('Firebase Auth Login Error:', err);
+      console.error('Nexus Console Login Error:', err);
       setVerifyingClearance(false);
       const code = err.code || '';
 
       if (code === 'auth/invalid-credential' || code === 'auth/wrong-password') {
         setErrorMsg('Invalid credentials. Please verify your email and password.');
       } else if (code === 'auth/user-not-found') {
-        setErrorMsg('No account found for this email. Please check your credentials.');
+        setErrorMsg('No account found for this email address. Please check your credentials.');
       } else if (code === 'auth/too-many-requests') {
         setErrorMsg('Too many failed attempts. Please wait a few moments and try again.');
       } else if (code === 'auth/invalid-email') {
         setErrorMsg('Invalid email format.');
       } else {
-        setErrorMsg(err.message || 'Authentication failed. Please check your credentials.');
+        setErrorMsg(err.message || 'Authentication failed. Please verify your credentials.');
       }
     } finally {
       setLoading(false);
@@ -148,34 +165,38 @@ export default function LoginScreen({ onLoginSuccess, initialError }: LoginScree
           </span>
         </button>
       </div>
-      {/* Subtle Ambient Background Accents */}
+
+      {/* Subtle Ambient Background Gold Accents */}
       <div className="absolute -top-40 -left-40 w-96 h-96 bg-[#D4AF37]/5 rounded-full blur-3xl pointer-events-none" />
       <div className="absolute -bottom-40 -right-40 w-96 h-96 bg-[#B38728]/5 rounded-full blur-3xl pointer-events-none" />
 
-      {/* Main Login Card */}
+      {/* Main Centered Login Card */}
       <div className="w-full max-w-md bg-[#1A1A1A] border border-[#2E2E2E] rounded-2xl p-6 sm:p-8 shadow-2xl shadow-black relative overflow-hidden z-10">
-        {/* Top Gold Trim */}
+        {/* Top Gold Accent Line */}
         <div className="absolute top-0 left-0 right-0 h-1 bg-gradient-to-r from-[#B38728] via-[#FBF5B7] to-[#D4AF37]" />
 
         {/* Brand Header */}
         <div className="flex flex-col items-center text-center mb-6 pt-2">
+          {/* Solarithm Sun Icon in Gold */}
           <div className="w-14 h-14 rounded-2xl bg-[#242424] border border-[#D4AF37]/30 flex items-center justify-center mb-3 shadow-inner shadow-[#D4AF37]/10">
             <Sun className="w-7 h-7 text-[#D4AF37]" />
           </div>
-          <div className="flex items-center gap-1.5">
-            <h1 className="text-xl sm:text-2xl font-bold text-white tracking-wider">
+          
+          <div className="flex items-center gap-2">
+            <h1 className="text-xl sm:text-2xl font-extrabold text-white tracking-wider">
               SOLARITHM
             </h1>
-            <span className="text-xl sm:text-2xl font-bold text-[#D4AF37] tracking-wider">
+            <span className="text-xl sm:text-2xl font-extrabold text-[#D4AF37] tracking-wider">
               NEXUS
             </span>
           </div>
+          
           <p className="text-xs text-gray-400 mt-1 font-medium tracking-wide">
-            Owner Management Portal
+            Master Admin Console &amp; Governance Hub
           </p>
         </div>
 
-        {/* Error Alert Box */}
+        {/* Error Alert Banner */}
         {errorMsg && (
           <div 
             id="login-error-alert"
@@ -191,7 +212,7 @@ export default function LoginScreen({ onLoginSuccess, initialError }: LoginScree
           {/* Email Field */}
           <div>
             <label className="block text-xs font-semibold text-gray-300 uppercase tracking-wider mb-1.5">
-              Owner Email
+              Email Address
             </label>
             <div className="relative">
               <Mail className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400 pointer-events-none" />
@@ -200,21 +221,19 @@ export default function LoginScreen({ onLoginSuccess, initialError }: LoginScree
                 type="email"
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
-                placeholder="owner@solarithm.com"
+                placeholder="name@example.com"
                 required
                 autoComplete="email"
-                className="w-full pl-10 pr-4 py-2.5 bg-[#242424] border border-[#333333] focus:border-[#D4AF37] focus:ring-1 focus:ring-[#D4AF37] rounded-xl text-sm text-white placeholder-gray-500 focus:outline-none transition-all"
+                className="w-full pl-10 pr-4 py-2.5 bg-[#242424] border border-[#333333] focus:border-[#D4AF37] focus:ring-1 focus:ring-[#D4AF37] rounded-xl text-sm text-white placeholder-gray-500 focus:outline-none transition-all font-mono"
               />
             </div>
           </div>
 
           {/* Password Field */}
           <div>
-            <div className="flex items-center justify-between mb-1.5">
-              <label className="block text-xs font-semibold text-gray-300 uppercase tracking-wider">
-                Password
-              </label>
-            </div>
+            <label className="block text-xs font-semibold text-gray-300 uppercase tracking-wider mb-1.5">
+              Password
+            </label>
             <div className="relative">
               <Lock className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400 pointer-events-none" />
               <input
@@ -222,10 +241,10 @@ export default function LoginScreen({ onLoginSuccess, initialError }: LoginScree
                 type={showPassword ? 'text' : 'password'}
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
-                placeholder="••••••••"
+                placeholder="••••••••••••"
                 required
                 autoComplete="current-password"
-                className="w-full pl-10 pr-11 py-2.5 bg-[#242424] border border-[#333333] focus:border-[#D4AF37] focus:ring-1 focus:ring-[#D4AF37] rounded-xl text-sm text-white placeholder-gray-500 focus:outline-none transition-all"
+                className="w-full pl-10 pr-11 py-2.5 bg-[#242424] border border-[#333333] focus:border-[#D4AF37] focus:ring-1 focus:ring-[#D4AF37] rounded-xl text-sm text-white placeholder-gray-500 focus:outline-none transition-all font-mono"
               />
               <button
                 type="button"
@@ -238,14 +257,16 @@ export default function LoginScreen({ onLoginSuccess, initialError }: LoginScree
             </div>
           </div>
 
-          {/* Verifying Clearance Active Indicator */}
+          {/* Verifying Clearance Indicator */}
           {verifyingClearance && (
             <div 
               id="verifying-owner-clearance-indicator"
               className="p-3 bg-[#D4AF37]/10 border border-[#D4AF37]/40 rounded-xl flex items-center justify-center gap-2.5 text-xs text-amber-200 font-mono shadow-sm shadow-[#D4AF37]/10 animate-pulse"
             >
               <span className="w-2 h-2 rounded-full bg-[#D4AF37] animate-ping shrink-0" />
-              <span className="font-semibold text-[#FBF5B7] tracking-wider">Verifying Owner Clearance...</span>
+              <span className="font-semibold text-[#FBF5B7] tracking-wider">
+                Verifying Nexus Console Clearance...
+              </span>
             </div>
           )}
 
@@ -259,11 +280,15 @@ export default function LoginScreen({ onLoginSuccess, initialError }: LoginScree
             {loading ? (
               <span className="flex items-center gap-2">
                 <div className="w-4 h-4 border-2 border-black border-t-transparent rounded-full animate-spin" />
-                <span>{verifyingClearance ? 'Verifying Owner Clearance...' : 'Authenticating Owner Session...'}</span>
+                <span>
+                  {verifyingClearance
+                    ? 'Verifying Nexus Clearance...'
+                    : 'Authenticating Session...'}
+                </span>
               </span>
             ) : (
               <>
-                <span>Sign In to Nexus</span>
+                <span>Sign In to Nexus Console</span>
                 <ArrowRight className="w-4 h-4" />
               </>
             )}

@@ -141,7 +141,7 @@ export default function AppRegistryTab({ currentEmail, currentRole }: AppRegistr
         setLoading(false);
       },
       (err) => {
-        console.error('Error loading apps:', err);
+        console.warn('Snapshot listener caught:', err);
         handleFirestoreError(err, OperationType.LIST, COLLECTIONS.APPS);
         setErrorMsg('Failed to load registered applications.');
         setLoading(false);

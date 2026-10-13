@@ -57,6 +57,23 @@ import { COLLECTIONS, CLIENT_FIELDS } from "@/src/config/schema";
 import { ConfirmModal } from './ConfirmModal';
 import * as XLSX from 'xlsx';
 import { useDataCache } from '@/components/DataCacheContext';
+import { 
+  provisionUserRecord, 
+  updateUserRecord, 
+  safeStringIdentifier, 
+  normalizeRole 
+} from '@/lib/userService';
+import {
+  safeSetDoc,
+  normalizeEmployeeProfilePayload,
+  sanitizeFirestorePayload
+} from '@/lib/firestoreSanitizer';
+import { 
+  ingestEmployeeSpreadsheet, 
+  deduplicateEmployeeList, 
+  parseAndNormalizeRole,
+  executeDeduplicationSweep
+} from '@/lib/employeeImportService';
 
 const FALLBACK_ADMIN = 'jay.solarithm@gmail.com';
 
@@ -80,7 +97,7 @@ export const DEFAULT_FALLBACK_DEPARTMENTS: DepartmentDocument[] = [
   {
     name: 'Solar Engineering & Design',
     code: 'ENG',
-    availableRoles: ['designer', 'manager', 'admin'],
+    availableRoles: ['designer', 'lead designer', 'manager', 'admin'],
     description: 'PV array layout, single-line diagrams, shading simulation, and PVSyst analysis.'
   },
   {
@@ -118,6 +135,7 @@ export const DEFAULT_FALLBACK_DEPARTMENTS: DepartmentDocument[] = [
 export const ROLE_DESCRIPTIONS: Record<string, string> = {
   sales: 'Proposals, CRM & Client Deals',
   designer: 'Solar PV & CAD Engineering',
+  'lead designer': 'Senior Solar PV & CAD Engineering Oversight',
   manager: 'Department Team Lead & Oversight',
   admin: 'Personnel & Operational Administration',
   owner: 'Enterprise Ownership & Full Control',
@@ -127,17 +145,30 @@ export const ROLE_DESCRIPTIONS: Record<string, string> = {
 };
 
 export function getDeptRoles(dept?: Partial<DepartmentDocument> | null): string[] {
-  if (!dept) return ['sales', 'manager', 'admin', 'designer'];
+  if (!dept) return ['sales', 'manager', 'admin', 'designer', 'lead designer', 'owner'];
   if (dept.availableRoles && Array.isArray(dept.availableRoles) && dept.availableRoles.length > 0) {
     return dept.availableRoles;
   }
+  const deptName = (dept.name || '').toLowerCase();
   const fallback = DEFAULT_FALLBACK_DEPARTMENTS.find(
-    d => d.name.toLowerCase() === (dept.name || '').toLowerCase()
+    d => d.name.toLowerCase() === deptName ||
+         d.name.toLowerCase().includes(deptName) ||
+         deptName.includes(d.name.toLowerCase()) ||
+         (d.code && d.code.toLowerCase() === deptName)
   );
   if (fallback && fallback.availableRoles && fallback.availableRoles.length > 0) {
     return fallback.availableRoles;
   }
-  return ['sales', 'manager', 'admin'];
+  if (deptName.includes('design') || deptName.includes('engineering') || deptName.includes('cad')) {
+    return ['designer', 'lead designer', 'manager', 'admin'];
+  }
+  if (deptName.includes('sale') || deptName.includes('business')) {
+    return ['sales', 'manager', 'admin'];
+  }
+  if (deptName.includes('exec') || deptName.includes('manage') || deptName.includes('director')) {
+    return ['owner', 'admin', 'manager'];
+  }
+  return ['sales', 'manager', 'admin', 'designer', 'lead designer'];
 }
 
 interface UserManagementTabProps {
@@ -252,6 +283,7 @@ export default function UserManagementTab({ currentEmail, currentRole }: UserMan
   const [selectedDeptFilter, setSelectedDeptFilter] = useState('ALL');
   const [revealedBankIds, setRevealedBankIds] = useState<Record<string, boolean>>({});
   const [copiedId, setCopiedId] = useState<string | null>(null);
+  const [sweeping, setSweeping] = useState(false);
 
   // Add/Edit Employee Modal State
   const [isModalOpen, setIsModalOpen] = useState(false);
@@ -277,6 +309,7 @@ export default function UserManagementTab({ currentEmail, currentRole }: UserMan
     aadhaarCardNumber: string;
     houseAddress: string;
     personalEmailAddress: string;
+    phone?: string;
   }>({
     employeeId: '',
     name: '',
@@ -293,7 +326,8 @@ export default function UserManagementTab({ currentEmail, currentRole }: UserMan
     panCardNumber: '',
     aadhaarCardNumber: '',
     houseAddress: '',
-    personalEmailAddress: ''
+    personalEmailAddress: '',
+    phone: ''
   });
 
   // Dynamic Departments from Firestore
@@ -342,35 +376,68 @@ export default function UserManagementTab({ currentEmail, currentRole }: UserMan
         getDocs(collection(db, COLLECTIONS.USERS)),
         getDocs(collection(db, COLLECTIONS.EMPLOYEES || 'employees')).catch(() => ({ forEach: () => {} } as any))
       ]);
-      const listMap = new Map<string, UserDocument>();
+      const rawList: UserDocument[] = [];
       userSnap.forEach((docSnap) => {
-        listMap.set(docSnap.id, { ...(docSnap.data() as UserDocument), id: docSnap.id });
+        rawList.push({ ...(docSnap.data() as UserDocument), id: docSnap.id });
       });
       empSnap.forEach((docSnap: any) => {
-        const emp = docSnap.data() as UserDocument;
-        const normalizedEmpEmail = (emp.email || '').trim().toLowerCase();
-        // Check if already present by id or email
-        const existingById = listMap.get(docSnap.id);
-        const existingByEmail = Array.from(listMap.values()).find(
-          u => (u.email || '').trim().toLowerCase() === normalizedEmpEmail
-        );
-        if (!existingById && !existingByEmail) {
-          listMap.set(docSnap.id, { ...emp, id: docSnap.id });
-        }
+        rawList.push({ ...(docSnap.data() as UserDocument), id: docSnap.id });
       });
-      const list: UserDocument[] = Array.from(listMap.values());
-      // Sort by employeeId or name ascending
-      list.sort((a, b) => {
+
+      const { dedupedList, duplicateDocIdsToPurge } = deduplicateEmployeeList(rawList);
+      dedupedList.forEach((u) => {
+        if (u.role) u.role = normalizeRole(u.role);
+      });
+      dedupedList.sort((a, b) => {
         if (a.employeeId && b.employeeId) {
           return a.employeeId.localeCompare(b.employeeId);
         }
         return (a.name || '').localeCompare(b.name || '');
       });
-      setUsers(list);
-      setCachedEmployees(list);
+
+      setUsers(dedupedList);
+      setCachedEmployees(dedupedList);
+
+      // Background purge of stale duplicate documents and persistence of merged primary records in Firestore
+      if (duplicateDocIdsToPurge && duplicateDocIdsToPurge.size > 0) {
+        const masterIds = new Set(dedupedList.map(u => u.id));
+        for (const dupId of duplicateDocIdsToPurge) {
+          if (!masterIds.has(dupId)) {
+            deleteDoc(doc(db, COLLECTIONS.USERS, dupId)).catch(() => {});
+            deleteDoc(doc(db, COLLECTIONS.EMPLOYEES || 'employees', dupId)).catch(() => {});
+          }
+        }
+        for (const emp of dedupedList) {
+          try {
+            const targetUid = emp.uid || emp.id;
+            const canonicalEmpId = (emp.employeeId || targetUid || '').toUpperCase();
+            if (targetUid) {
+              const sanitizedPayload = normalizeEmployeeProfilePayload({
+                ...emp,
+                id: targetUid,
+                uid: targetUid,
+                authUid: targetUid,
+                employeeId: canonicalEmpId,
+                updatedAt: new Date().toISOString()
+              });
+              await safeSetDoc(doc(db, COLLECTIONS.USERS, targetUid), sanitizedPayload, { merge: true });
+              if (canonicalEmpId) {
+                await safeSetDoc(doc(db, COLLECTIONS.EMPLOYEES || 'employees', canonicalEmpId), {
+                  ...sanitizedPayload,
+                  id: canonicalEmpId,
+                  authUid: targetUid,
+                  uid: targetUid
+                }, { merge: true });
+              }
+            }
+          } catch (syncErr) {
+            console.warn(`[Employee Directory] Background sync warning for ${emp.employeeId || emp.email || emp.name}:`, syncErr);
+          }
+        }
+      }
       try {
         if (typeof window !== 'undefined') {
-          localStorage.setItem('employees', JSON.stringify(list));
+          localStorage.setItem('employees', JSON.stringify(dedupedList));
         }
       } catch (e) {
         console.warn('Could not save employees to localStorage', e);
@@ -398,34 +465,69 @@ export default function UserManagementTab({ currentEmail, currentRole }: UserMan
           getDocs(collection(db, COLLECTIONS.USERS)),
           getDocs(collection(db, COLLECTIONS.EMPLOYEES || 'employees')).catch(() => ({ forEach: () => {} } as any))
         ]);
-        const listMap = new Map<string, UserDocument>();
+        const rawList: UserDocument[] = [];
         userSnap.forEach((docSnap) => {
-          listMap.set(docSnap.id, { ...(docSnap.data() as UserDocument), id: docSnap.id });
+          rawList.push({ ...(docSnap.data() as UserDocument), id: docSnap.id });
         });
         empSnap.forEach((docSnap: any) => {
-          const emp = docSnap.data() as UserDocument;
-          const normalizedEmpEmail = (emp.email || '').trim().toLowerCase();
-          const existingById = listMap.get(docSnap.id);
-          const existingByEmail = Array.from(listMap.values()).find(
-            u => (u.email || '').trim().toLowerCase() === normalizedEmpEmail
-          );
-          if (!existingById && !existingByEmail) {
-            listMap.set(docSnap.id, { ...emp, id: docSnap.id });
-          }
+          rawList.push({ ...(docSnap.data() as UserDocument), id: docSnap.id });
         });
-        const list: UserDocument[] = Array.from(listMap.values());
-        list.sort((a, b) => {
+
+        const { dedupedList, duplicateDocIdsToPurge } = deduplicateEmployeeList(rawList);
+        dedupedList.forEach((u) => {
+          if (u.role) u.role = normalizeRole(u.role);
+        });
+        dedupedList.sort((a, b) => {
           if (a.employeeId && b.employeeId) {
             return a.employeeId.localeCompare(b.employeeId);
           }
           return (a.name || '').localeCompare(b.name || '');
         });
+
         if (isMounted) {
-          setUsers(list);
-          setCachedEmployees(list);
+          setUsers(dedupedList);
+          setCachedEmployees(dedupedList);
+
+          // Background purge of stale duplicate documents and persistence of merged primary records in Firestore
+          if (duplicateDocIdsToPurge && duplicateDocIdsToPurge.size > 0) {
+            const masterIds = new Set(dedupedList.map(u => u.id));
+            for (const dupId of duplicateDocIdsToPurge) {
+              if (!masterIds.has(dupId)) {
+                deleteDoc(doc(db, COLLECTIONS.USERS, dupId)).catch(() => {});
+                deleteDoc(doc(db, COLLECTIONS.EMPLOYEES || 'employees', dupId)).catch(() => {});
+              }
+            }
+            for (const emp of dedupedList) {
+              try {
+                const targetUid = emp.uid || emp.id;
+                const canonicalEmpId = (emp.employeeId || targetUid || '').toUpperCase();
+                if (targetUid) {
+                  const sanitizedPayload = normalizeEmployeeProfilePayload({
+                    ...emp,
+                    id: targetUid,
+                    uid: targetUid,
+                    authUid: targetUid,
+                    employeeId: canonicalEmpId,
+                    updatedAt: new Date().toISOString()
+                  });
+                  await safeSetDoc(doc(db, COLLECTIONS.USERS, targetUid), sanitizedPayload, { merge: true });
+                  if (canonicalEmpId) {
+                    await safeSetDoc(doc(db, COLLECTIONS.EMPLOYEES || 'employees', canonicalEmpId), {
+                      ...sanitizedPayload,
+                      id: canonicalEmpId,
+                      authUid: targetUid,
+                      uid: targetUid
+                    }, { merge: true });
+                  }
+                }
+              } catch (syncErr) {
+                console.warn(`[Employee Directory] Background sync warning for ${emp.employeeId || emp.email || emp.name}:`, syncErr);
+              }
+            }
+          }
           try {
             if (typeof window !== 'undefined') {
-              localStorage.setItem('employees', JSON.stringify(list));
+              localStorage.setItem('employees', JSON.stringify(dedupedList));
             }
           } catch (e) {
             console.warn('Could not save employees to localStorage', e);
@@ -505,7 +607,7 @@ export default function UserManagementTab({ currentEmail, currentRole }: UserMan
         setDepartmentsList(DEFAULT_FALLBACK_DEPARTMENTS);
       }
     }, (err) => {
-      console.warn('Departments onSnapshot error in UserManagementTab:', err);
+      console.warn('Snapshot listener caught:', err);
     });
 
     return () => {
@@ -592,7 +694,8 @@ export default function UserManagementTab({ currentEmail, currentRole }: UserMan
       panCardNumber: '',
       aadhaarCardNumber: '',
       houseAddress: '',
-      personalEmailAddress: ''
+      personalEmailAddress: '',
+      phone: ''
     });
     setFormError(null);
     setIsModalOpen(true);
@@ -621,12 +724,13 @@ export default function UserManagementTab({ currentEmail, currentRole }: UserMan
       dateOfBirth: dobNorm,
       basicPay: user.basicPay !== undefined && user.basicPay !== null && !isNaN(Number(user.basicPay)) ? Number(user.basicPay) : 0,
       bankName: user.bankDetails?.bankName || user.bankName || '',
-      accountNumber: user.bankDetails?.accountNumber || user.accountNumber || '',
-      ifscCode: user.bankDetails?.ifscCode || user.ifscCode || '',
-      panCardNumber: user.panCardNumber || user.panNumber || '',
-      aadhaarCardNumber: user.aadhaarCardNumber || user.aadhaarNumber || '',
+      accountNumber: safeStringIdentifier(user.bankDetails?.accountNumber || user.accountNumber || ''),
+      ifscCode: safeStringIdentifier(user.bankDetails?.ifscCode || user.ifscCode || '').toUpperCase(),
+      panCardNumber: safeStringIdentifier(user.panCardNumber || user.panNumber || '').toUpperCase(),
+      aadhaarCardNumber: safeStringIdentifier(user.aadhaarCardNumber || user.aadhaarNumber || ''),
       houseAddress: user.houseAddress || '',
-      personalEmailAddress: user.personalEmailAddress || user.personalEmail || ''
+      personalEmailAddress: user.personalEmailAddress || user.personalEmail || '',
+      phone: safeStringIdentifier((user as any).phone || '')
     });
     setFormError(null);
     setIsModalOpen(true);
@@ -694,44 +798,55 @@ export default function UserManagementTab({ currentEmail, currentRole }: UserMan
 
     setSubmitting(true);
     try {
+      const safeAcct = safeStringIdentifier(formData.accountNumber);
+      const safeIfsc = safeStringIdentifier(formData.ifscCode).toUpperCase();
+      const safeBankName = formData.bankName.trim();
+      const safePan = safeStringIdentifier(panTrimmed).toUpperCase();
+      const safeAadhaar = safeStringIdentifier(aadhaarTrimmed);
+      const safeEmpId = safeStringIdentifier(empIdTrimmed).toUpperCase();
+      const safePhone = safeStringIdentifier(formData.phone);
+      const canonicalRole = normalizeRole(formData.role);
+
       const bankDetailsObj = {
-        bankName: formData.bankName.trim(),
-        accountNumber: formData.accountNumber.trim(),
-        ifscCode: formData.ifscCode.trim().toUpperCase()
+        bankName: safeBankName,
+        accountNumber: safeAcct,
+        ifscCode: safeIfsc
       };
 
       const dojNormalized = normalizeDateToYMD(formData.dateOfJoining);
       const dobNormalized = normalizeDateToYMD(formData.dateOfBirth);
 
-      const employeePayload: Partial<UserDocument> = {
-        employeeId: empIdTrimmed,
+      const employeePayload: Record<string, any> = {
+        employeeId: safeEmpId,
         name: nameTrimmed,
         email: emailTrimmed,
-        role: formData.role,
+        role: canonicalRole,
         department: formData.department.trim(),
         designation: formData.designation.trim(),
+        phone: safePhone,
         dateOfJoining: dojNormalized,
         doj: dojNormalized,
         dateOfBirth: dobNormalized,
         dob: dobNormalized,
         basicPay: basicPayNum,
-        bankName: bankDetailsObj.bankName,
-        accountNumber: bankDetailsObj.accountNumber,
-        ifscCode: bankDetailsObj.ifscCode,
+        bankName: safeBankName,
+        accountNumber: safeAcct,
+        ifscCode: safeIfsc,
         bankDetails: bankDetailsObj,
-        // KYC & Personal Details
-        panCardNumber: panTrimmed,
-        aadhaarCardNumber: aadhaarTrimmed,
+        // KYC & Personal Details (DAT-01: strictly string formatted)
+        panCardNumber: safePan,
+        panNumber: safePan,
+        aadhaarCardNumber: safeAadhaar,
+        aadhaarNumber: safeAadhaar,
         houseAddress: addressTrimmed,
-        personalEmailAddress: personalEmailTrimmed,
-        panNumber: panTrimmed,
-        aadhaarNumber: aadhaarTrimmed,
-        personalEmail: personalEmailTrimmed,
+        personalEmailAddress: personalEmailTrimmed.toLowerCase(),
+        personalEmail: personalEmailTrimmed.toLowerCase(),
+        status: 'ACTIVE',
         updatedAt: new Date().toISOString()
       };
 
       if (editingUserId) {
-        // Edit Existing User
+        // Edit Existing User: atomic write to /users/{editingUserId} and /employees/{editingUserId}
         const userRef = doc(db, COLLECTIONS.USERS, editingUserId);
         const existingUser = users.find((u) => u.id === editingUserId);
         
@@ -740,17 +855,23 @@ export default function UserManagementTab({ currentEmail, currentRole }: UserMan
         
         const batch = writeBatch(db);
 
-        batch.update(userRef, {
+        const cleanPayload = normalizeEmployeeProfilePayload({
           ...employeePayload,
-          assignedRole: formData.role,
+          uid: editingUserId,
+          authUid: editingUserId,
+          assignedRole: canonicalRole,
           createdAt: existingUser?.createdAt || new Date().toISOString()
         });
+
+        batch.update(userRef, cleanPayload);
         
-        const empDocRef = doc(db, COLLECTIONS.EMPLOYEES || 'employees', editingUserId);
+        const empDocId = safeEmpId || editingUserId;
+        const empDocRef = doc(db, COLLECTIONS.EMPLOYEES || 'employees', empDocId);
         batch.set(empDocRef, {
-          ...employeePayload,
-          assignedRole: formData.role,
-          createdAt: existingUser?.createdAt || new Date().toISOString()
+          ...cleanPayload,
+          id: empDocId,
+          authUid: editingUserId,
+          uid: editingUserId
         }, { merge: true });
 
         // Reassignment logic if role changed from sales
@@ -767,23 +888,18 @@ export default function UserManagementTab({ currentEmail, currentRole }: UserMan
         }
 
         await batch.commit();
-        setSuccessMsg(`Employee record "${nameTrimmed}" [${empIdTrimmed}] updated successfully.`);
+        setSuccessMsg(`Employee record "${nameTrimmed}" [${safeEmpId}] updated successfully.`);
       } else {
-        // Add New User with Deterministic Upsert Key
-        const uniqueKey = (empIdTrimmed || emailTrimmed).replace(/[^a-zA-Z0-9_.-]/g, '_').toLowerCase();
-        const newUserRef = doc(db, COLLECTIONS.USERS, uniqueKey);
-        const newDoc: UserDocument = {
-          ...employeePayload as UserDocument,
-          createdAt: new Date().toISOString()
-        };
-        await setDoc(newUserRef, newDoc, { merge: true });
-        try {
-          const empDocRef = doc(db, COLLECTIONS.EMPLOYEES || 'employees', uniqueKey);
-          await setDoc(empDocRef, newDoc, { merge: true });
-        } catch (empSyncErr) {
-          console.warn('Sync to employees collection note:', empSyncErr);
-        }
-        setSuccessMsg(`Employee "${nameTrimmed}" [${empIdTrimmed}] created successfully.`);
+        // SEC-01: Atomic User Document Keying via canonical /users/{uid}
+        await provisionUserRecord({
+          ...employeePayload,
+          email: emailTrimmed,
+          name: nameTrimmed,
+          role: canonicalRole,
+          employeeId: safeEmpId,
+          status: 'ACTIVE'
+        });
+        setSuccessMsg(`Employee "${nameTrimmed}" [${safeEmpId}] created successfully.`);
       }
 
       await loadUsers();
@@ -1029,70 +1145,7 @@ export default function UserManagementTab({ currentEmail, currentRole }: UserMan
     setSuccessMsg(null);
 
     try {
-      // 1. Fetch live database state of all users to ensure complete upsert fidelity
-      const [userSnap, empSnap] = await Promise.all([
-        getDocs(collection(db, COLLECTIONS.USERS)),
-        getDocs(collection(db, COLLECTIONS.EMPLOYEES || 'employees')).catch(() => ({ forEach: () => {} } as any))
-      ]);
-
-      const masterUserMap = new Map<string, UserDocument>();
-      userSnap.forEach((docSnap) => {
-        masterUserMap.set(docSnap.id, { ...(docSnap.data() as UserDocument), id: docSnap.id });
-      });
-      empSnap.forEach((docSnap: any) => {
-        const emp = docSnap.data() as UserDocument;
-        if (!masterUserMap.has(docSnap.id)) {
-          masterUserMap.set(docSnap.id, { ...emp, id: docSnap.id });
-        }
-      });
-
-      // Also merge any users currently in local state to ensure no newly added records are missed
-      users.forEach((u) => {
-        if (u.id && !masterUserMap.has(u.id)) {
-          masterUserMap.set(u.id, u);
-        }
-      });
-
-      // Rapid lookup index maps for matching by employeeId or corporate email
-      const userByEmpId = new Map<string, UserDocument>();
-      const userByEmail = new Map<string, UserDocument>();
-
-      masterUserMap.forEach((u) => {
-        if (u.employeeId && u.employeeId.trim()) {
-          userByEmpId.set(u.employeeId.trim().toLowerCase(), u);
-        }
-        if (u.email && u.email.trim()) {
-          userByEmail.set(u.email.trim().toLowerCase(), u);
-        }
-      });
-
-      // 2. Data Hygiene Helper: clean strings while preserving integers (Aadhaar, Account numbers) without scientific notation
-      const cleanCellToString = (val: any): string => {
-        if (val === null || val === undefined) return '';
-        if (typeof val === 'number') {
-          if (Number.isInteger(val)) {
-            return BigInt(Math.round(val)).toString();
-          }
-          const str = val.toString();
-          if (str.includes('e') || str.includes('E')) {
-            return Number(val).toLocaleString('fullwide', { useGrouping: false });
-          }
-          return str;
-        }
-        const s = String(val).trim();
-        if (/^[+-]?\d+(\.\d+)?[eE][+-]?\d+$/i.test(s)) {
-          try {
-            const num = Number(s);
-            if (!isNaN(num) && Number.isInteger(num)) {
-              return BigInt(Math.round(num)).toString();
-            }
-            return Number(s).toLocaleString('fullwide', { useGrouping: false });
-          } catch {}
-        }
-        return s;
-      };
-
-      // 3. Parse input file: supports .xlsx, .xls, .csv, .tsv, .txt, .json
+      // 1. Parse input file: supports .xlsx, .xls, .csv, .tsv, .txt, .json
       let rawRows: Record<string, any>[] = [];
 
       if (file.name.toLowerCase().endsWith('.json')) {
@@ -1116,8 +1169,8 @@ export default function UserManagementTab({ currentEmail, currentRole }: UserMan
           return;
         }
         const worksheet = workbook.Sheets[firstSheetName];
-        // raw: true preserves unformatted integer values for Aadhaar and Account numbers without scientific notation
-        const grid = XLSX.utils.sheet_to_json(worksheet, { header: 1, raw: true, defval: '' }) as any[][];
+        // DAT-01: raw: false preserves string representation of long integers without scientific notation
+        const grid = XLSX.utils.sheet_to_json(worksheet, { header: 1, raw: false, defval: '' }) as any[][];
 
         if (grid.length <= 1) {
           setErrorMsg('Uploaded file is empty or contains no employee data rows.');
@@ -1143,227 +1196,19 @@ export default function UserManagementTab({ currentEmail, currentRole }: UserMan
         return;
       }
 
-      // Helper to extract first non-empty string among possible header aliases
-      const getVal = (rowObj: Record<string, any>, aliases: string[]): string => {
-        for (const alias of aliases) {
-          if (rowObj[alias] !== undefined && rowObj[alias] !== null && String(rowObj[alias]).trim() !== '') {
-            return cleanCellToString(rowObj[alias]);
-          }
-        }
-        return '';
-      };
+      // 2. Execute strict upsert, deduplication, and role mapping workflow
+      const { updatedCount, insertedCount, purgedDuplicatesCount, finalEmployees } = 
+        await ingestEmployeeSpreadsheet(rawRows);
 
-      let insertedCount = 0;
-      let updatedCount = 0;
-
-      for (const rowObj of rawRows) {
-        const empIdVal = getVal(rowObj, ['employeeid', 'employee id', 'emp id', 'empid', 'id']).trim();
-        const emailVal = getVal(rowObj, ['email', 'official work email', 'official email', 'work email', 'email address', 'corporate email']).trim().toLowerCase();
-        const nameVal = getVal(rowObj, ['name', 'full name', 'employee name', 'fullname']).trim();
-
-        if (!empIdVal && !emailVal && !nameVal) {
-          continue; // Skip blank row
-        }
-
-        // MATCH EXISTING RECORD: Match incoming records by unique Employee ID or official corporate email
-        let existingUser: UserDocument | undefined = undefined;
-        if (empIdVal) {
-          existingUser = userByEmpId.get(empIdVal.toLowerCase());
-        }
-        if (!existingUser && emailVal) {
-          existingUser = userByEmail.get(emailVal);
-        }
-        if (!existingUser) {
-          const keyCandidate = (empIdVal || emailVal || nameVal).replace(/[^a-zA-Z0-9_.-]/g, '_').toLowerCase();
-          existingUser = masterUserMap.get(keyCandidate);
-        }
-
-        // Parse optional explicit role
-        const roleStr = getVal(rowObj, ['role', 'user role', 'assigned role', 'userrole']).toLowerCase();
-        const validRoles: UserRole[] = ['owner', 'admin', 'sales', 'designer'];
-        const explicitRole: UserRole | undefined = validRoles.includes(roleStr as UserRole) ? (roleStr as UserRole) : undefined;
-
-        // Parse Basic Pay: strictly preserve 0 as 0 and do not fall back to defaults
-        let hasBasicPay = false;
-        let parsedBasicPay: number = 0;
-        const basicPayAliases = ['basicpay', 'basic pay', 'basic monthly pay', 'salary', 'basic'];
-        for (const alias of basicPayAliases) {
-          if (rowObj[alias] !== undefined && rowObj[alias] !== null && String(rowObj[alias]).trim() !== '') {
-            const raw = rowObj[alias];
-            const num = typeof raw === 'number' ? raw : Number(String(raw).replace(/[^0-9.-]+/g, ''));
-            if (!isNaN(num)) {
-              parsedBasicPay = num;
-              hasBasicPay = true;
-              break;
-            }
-          }
-        }
-
-        // Parse demographic and KYC fields
-        const deptVal = getVal(rowObj, ['department', 'dept']);
-        const desigVal = getVal(rowObj, ['designation', 'title', 'job title', 'position']);
-        const dojVal = getVal(rowObj, ['date of joining (yyyy-mm-dd)', 'date of joining', 'dateofjoining', 'doj', 'joining date']);
-        const dobVal = getVal(rowObj, ['date of birth (yyyy-mm-dd)', 'date of birth', 'dateofbirth', 'dob', 'birth date']);
-        const bankNameVal = getVal(rowObj, ['bank name', 'bankname', 'bank']);
-        const acctVal = getVal(rowObj, ['account number', 'accountnumber', 'account', 'bank account number', 'bank account', 'acct num']);
-        const ifscVal = getVal(rowObj, ['ifsc code', 'ifsccode', 'ifsc']).toUpperCase();
-        const panVal = getVal(rowObj, ['pan card number', 'pancardnumber', 'pan number', 'pan']).toUpperCase();
-        const aadhaarVal = getVal(rowObj, ['aadhaar card number', 'aadhaarcardnumber', 'aadhaar number', 'aadhaar', 'aadhar', 'aadhar card number']);
-        const addressVal = getVal(rowObj, ['house address', 'houseaddress', 'address', 'residential address', 'street address']);
-        const personalEmailVal = getVal(rowObj, ['personal email address', 'personal email', 'personalemail', 'personalemailaddress']).toLowerCase();
-
-        if (existingUser) {
-          // =========================================================================
-          // 1. UPDATE EXISTING EMPLOYEE:
-          // Update only demographic, designation, or salary fields provided in the sheet.
-          // PRESERVE existing assigned roles, permissions, and App Registry mappings!
-          // =========================================================================
-          const targetDocId = existingUser.id || (empIdVal || emailVal || nameVal).replace(/[^a-zA-Z0-9_.-]/g, '_').toLowerCase();
-
-          const finalName = nameVal || existingUser.name || 'Employee';
-          const finalEmail = emailVal || existingUser.email || `${targetDocId}@solarithm.internal`;
-          const finalEmpId = empIdVal || existingUser.employeeId || targetDocId.toUpperCase();
-          const finalRole = explicitRole !== undefined ? explicitRole : existingUser.role;
-          const finalDept = deptVal || existingUser.department || 'Operations';
-          const finalDesig = desigVal || existingUser.designation || 'Staff';
-          const finalBasicPay = hasBasicPay ? parsedBasicPay : (existingUser.basicPay ?? 0);
-          const finalDoj = dojVal || existingUser.dateOfJoining || existingUser.doj || '';
-          const finalDob = dobVal || existingUser.dateOfBirth || existingUser.dob || '';
-
-          const finalBankName = bankNameVal || existingUser.bankName || existingUser.bankDetails?.bankName || '';
-          const finalAcct = acctVal || existingUser.accountNumber || existingUser.bankDetails?.accountNumber || '';
-          const finalIfsc = ifscVal || existingUser.ifscCode || existingUser.bankDetails?.ifscCode || '';
-
-          const finalPan = panVal || existingUser.panCardNumber || existingUser.panNumber || '';
-          const finalAadhaar = aadhaarVal || existingUser.aadhaarCardNumber || existingUser.aadhaarNumber || '';
-          const finalAddress = addressVal || existingUser.houseAddress || '';
-          const finalPersonalEmail = personalEmailVal || existingUser.personalEmailAddress || existingUser.personalEmail || '';
-
-          // CRITICAL: Preserve existing accessibleApps from user document!
-          const finalAccessibleApps = Array.isArray(existingUser.accessibleApps)
-            ? [...existingUser.accessibleApps]
-            : [];
-
-          const finalCreatedAt = existingUser.createdAt || new Date().toISOString();
-
-          const payload: UserDocument = {
-            id: targetDocId,
-            name: finalName,
-            email: finalEmail,
-            employeeId: finalEmpId,
-            role: finalRole,
-            department: finalDept,
-            designation: finalDesig,
-            basicPay: finalBasicPay,
-            dateOfJoining: finalDoj,
-            doj: finalDoj,
-            dateOfBirth: finalDob,
-            dob: finalDob,
-            bankName: finalBankName,
-            accountNumber: finalAcct,
-            ifscCode: finalIfsc,
-            bankDetails: {
-              bankName: finalBankName,
-              accountNumber: finalAcct,
-              ifscCode: finalIfsc
-            },
-            panCardNumber: finalPan,
-            aadhaarCardNumber: finalAadhaar,
-            houseAddress: finalAddress,
-            personalEmailAddress: finalPersonalEmail,
-            panNumber: finalPan,
-            aadhaarNumber: finalAadhaar,
-            personalEmail: finalPersonalEmail,
-            accessibleApps: finalAccessibleApps, // PRESERVED!
-            createdAt: finalCreatedAt,          // PRESERVED!
-            updatedAt: new Date().toISOString()
-          };
-
-          // Save to USERS and sync to EMPLOYEES
-          await setDoc(doc(db, COLLECTIONS.USERS, targetDocId), payload, { merge: true });
-          try {
-            await setDoc(doc(db, COLLECTIONS.EMPLOYEES || 'employees', targetDocId), payload, { merge: true });
-          } catch (syncErr) {
-            console.warn('Sync to employees collection note:', syncErr);
-          }
-
-          masterUserMap.set(targetDocId, payload);
-          if (finalEmpId) userByEmpId.set(finalEmpId.toLowerCase(), payload);
-          if (finalEmail) userByEmail.set(finalEmail.toLowerCase(), payload);
-
-          updatedCount++;
-        } else {
-          // =========================================================================
-          // 2. INSERT NEW EMPLOYEE:
-          // Insert new employee record. Existing employees are untouched.
-          // =========================================================================
-          const targetDocId = (empIdVal || emailVal || nameVal).replace(/[^a-zA-Z0-9_.-]/g, '_').toLowerCase();
-
-          const payload: UserDocument = {
-            id: targetDocId,
-            name: nameVal || 'Employee',
-            email: emailVal || `${targetDocId}@solarithm.internal`,
-            employeeId: empIdVal || targetDocId.toUpperCase(),
-            role: explicitRole !== undefined ? explicitRole : 'sales',
-            department: deptVal || 'Operations',
-            designation: desigVal || 'Staff',
-            basicPay: hasBasicPay ? parsedBasicPay : 0,
-            dateOfJoining: dojVal,
-            doj: dojVal,
-            dateOfBirth: dobVal,
-            dob: dobVal,
-            bankName: bankNameVal,
-            accountNumber: acctVal,
-            ifscCode: ifscVal,
-            bankDetails: {
-              bankName: bankNameVal,
-              accountNumber: acctVal,
-              ifscCode: ifscVal
-            },
-            panCardNumber: panVal,
-            aadhaarCardNumber: aadhaarVal,
-            houseAddress: addressVal,
-            personalEmailAddress: personalEmailVal,
-            panNumber: panVal,
-            aadhaarNumber: aadhaarVal,
-            personalEmail: personalEmailVal,
-            accessibleApps: [], // New employee starts with empty array; existing employees are untouched
-            createdAt: new Date().toISOString(),
-            updatedAt: new Date().toISOString()
-          };
-
-          await setDoc(doc(db, COLLECTIONS.USERS, targetDocId), payload, { merge: true });
-          try {
-            await setDoc(doc(db, COLLECTIONS.EMPLOYEES || 'employees', targetDocId), payload, { merge: true });
-          } catch (syncErr) {
-            console.warn('Sync to employees collection note:', syncErr);
-          }
-
-          masterUserMap.set(targetDocId, payload);
-          if (payload.employeeId) userByEmpId.set(payload.employeeId.toLowerCase(), payload);
-          if (payload.email) userByEmail.set(payload.email.toLowerCase(), payload);
-
-          insertedCount++;
-        }
-      }
-
-      // 3. Assemble and sort the final merged list of all employees (existing untouched + updated + new)
-      const mergedUsers = Array.from(masterUserMap.values());
-      mergedUsers.sort((a, b) => {
-        if (a.employeeId && b.employeeId) {
-          return a.employeeId.localeCompare(b.employeeId);
-        }
-        return (a.name || '').localeCompare(b.name || '');
-      });
-
-      setUsers(mergedUsers);
-      setCachedEmployees(mergedUsers);
+      setUsers(finalEmployees);
+      setCachedEmployees(finalEmployees);
       if (typeof window !== 'undefined') {
-        localStorage.setItem('employees', JSON.stringify(mergedUsers));
+        localStorage.setItem('employees', JSON.stringify(finalEmployees));
       }
 
+      const dupMessage = purgedDuplicatesCount > 0 ? `, ${purgedDuplicatesCount} duplicate record(s) merged & cleaned` : '';
       setSuccessMsg(
-        `Import complete: ${updatedCount} existing employee(s) updated, ${insertedCount} new employee(s) added. All previous records and App Registry permissions were preserved.`
+        `Import complete: ${updatedCount} existing employee(s) updated, ${insertedCount} new employee(s) added${dupMessage}. All system roles and permissions were preserved.`
       );
       setTimeout(() => setSuccessMsg(null), 6000);
     } catch (err) {
@@ -1371,6 +1216,29 @@ export default function UserManagementTab({ currentEmail, currentRole }: UserMan
       setErrorMsg('Failed to parse and import employee file.');
     } finally {
       setSubmitting(false);
+    }
+  };
+
+  const handleDeduplicateSweep = async () => {
+    setSweeping(true);
+    setErrorMsg(null);
+    setSuccessMsg(null);
+    try {
+      const result = await executeDeduplicationSweep();
+      setUsers(result.mergedEmployees);
+      setCachedEmployees(result.mergedEmployees);
+      if (typeof window !== 'undefined') {
+        localStorage.setItem('employees', JSON.stringify(result.mergedEmployees));
+      }
+      setSuccessMsg(
+        `Deduplication sweep completed: Scanned ${result.totalScanned} records, consolidated into ${result.uniqueCount} verified employee profiles, and purged ${result.purgedCount} duplicate documents.`
+      );
+      setTimeout(() => setSuccessMsg(null), 8000);
+    } catch (err) {
+      console.error('Error during deduplication sweep:', err);
+      setErrorMsg('Failed to run deduplication sweep on directory.');
+    } finally {
+      setSweeping(false);
     }
   };
 
@@ -1489,17 +1357,31 @@ export default function UserManagementTab({ currentEmail, currentRole }: UserMan
   }, [selectedSalaryEmployee, workingDays, daysWorked, customHra, specialAllowance, incentiveBonus, customPf, profTax, tdsDeduction, otherDeductions]);
 
   const getRoleBadgeStyle = (r: UserRole) => {
-    switch (r) {
+    const roleNormalized = String(r || '').toLowerCase().replace(/[\s-]/g, '_');
+    switch (roleNormalized) {
       case 'owner':
-        return 'bg-amber-100 text-amber-900 border-amber-200 dark:bg-amber-500/10 dark:border-amber-500/30 dark:text-amber-400';
+        return 'bg-amber-100 text-amber-900 border-amber-200 dark:bg-amber-500/10 dark:border-amber-500/30 dark:text-amber-400 font-bold';
       case 'admin':
-        return 'bg-purple-100 text-purple-900 border-purple-200 dark:bg-purple-950/80 dark:border-purple-500/60 dark:text-purple-300';
+        return 'bg-purple-100 text-purple-900 border-purple-200 dark:bg-purple-950/80 dark:border-purple-500/60 dark:text-purple-300 font-bold';
+      case 'lead_sales':
+        return 'bg-teal-100 text-teal-900 border-teal-200 dark:bg-teal-500/15 dark:border-teal-500/40 dark:text-teal-300 font-bold';
       case 'sales':
-        return 'bg-emerald-100 text-emerald-900 border-emerald-200 dark:bg-emerald-500/10 dark:border-emerald-500/30 dark:text-emerald-400';
+        return 'bg-emerald-100 text-emerald-900 border-emerald-200 dark:bg-emerald-500/10 dark:border-emerald-500/30 dark:text-emerald-400 font-semibold';
+      case 'lead_designer':
+        return 'bg-indigo-100 text-indigo-900 border-indigo-200 dark:bg-indigo-500/15 dark:border-indigo-500/40 dark:text-indigo-300 font-bold';
       case 'designer':
-        return 'bg-blue-100 text-blue-900 border-blue-200 dark:bg-blue-500/10 dark:border-blue-500/30 dark:text-blue-400';
+        return 'bg-blue-100 text-blue-900 border-blue-200 dark:bg-blue-500/10 dark:border-blue-500/30 dark:text-blue-400 font-semibold';
+      case 'manager':
+        return 'bg-violet-100 text-violet-900 border-violet-200 dark:bg-violet-500/15 dark:border-violet-500/40 dark:text-violet-300 font-semibold';
+      case 'engineer':
+        return 'bg-cyan-100 text-cyan-900 border-cyan-200 dark:bg-cyan-500/10 dark:border-cyan-500/30 dark:text-cyan-300 font-medium';
+      case 'technician':
+        return 'bg-orange-100 text-orange-900 border-orange-200 dark:bg-orange-500/10 dark:border-orange-500/30 dark:text-orange-300 font-medium';
+      case 'accountant':
+        return 'bg-emerald-100 text-emerald-900 border-emerald-200 dark:bg-emerald-500/10 dark:border-emerald-500/30 dark:text-emerald-300 font-medium';
+      case 'employee':
       default:
-        return 'bg-slate-100 text-slate-700 border-slate-200 dark:bg-gray-500/10 dark:border-gray-500/30 dark:text-gray-200';
+        return 'bg-slate-100 text-slate-700 border-slate-200 dark:bg-gray-500/10 dark:border-gray-500/30 dark:text-gray-200 font-medium';
     }
   };
 
@@ -1554,6 +1436,16 @@ export default function UserManagementTab({ currentEmail, currentRole }: UserMan
           >
             <RefreshCw className={`w-3.5 h-3.5 ${loading ? 'animate-spin text-[#D4AF37]' : ''}`} />
             Refresh
+          </button>
+
+          <button
+            onClick={handleDeduplicateSweep}
+            disabled={sweeping || loading}
+            className="px-3.5 py-2.5 bg-[#2A2A2A] hover:bg-[#333333] border border-amber-500/40 text-amber-400 hover:text-amber-300 font-semibold text-sm rounded-lg transition-all flex items-center gap-1.5 cursor-pointer disabled:opacity-50 shadow-sm"
+            title="Scan existing records for duplicates (by ID, PAN, Email, Name) and merge into single primary documents"
+          >
+            <Sparkles className={`w-3.5 h-3.5 text-amber-400 ${sweeping ? 'animate-spin' : ''}`} />
+            {sweeping ? 'Deduplicating...' : 'Deduplicate Directory'}
           </button>
 
           <button
@@ -1718,7 +1610,9 @@ export default function UserManagementTab({ currentEmail, currentRole }: UserMan
               <tbody className="divide-y divide-[#333333]">
                 {filteredUsers.map((u, idx) => {
                   const isCurrentLoggedIn = (u.email || '').toLowerCase() === currentEmail.toLowerCase();
-                  const empId = u.employeeId || `SOL-EMP-${String(idx + 1).padStart(2, '0')}`;
+                  const isPartnerJay = (u.name || '').toLowerCase().includes('jay shah') || (u.email || '').includes('jayshah') || (u.personalEmail || '').includes('jayjalpa') || (u.personalEmailAddress || '').includes('jayjalpa');
+                  const isPartnerDeep = (u.name || '').toLowerCase().includes('deep davara') || (u.email || '').includes('deepdavara');
+                  const empId = isPartnerJay ? 'SDM-JS-001' : (isPartnerDeep ? 'SDM-DD-002' : (u.employeeId || `SOL-EMP-${String(idx + 1).padStart(2, '0')}`));
                   const bankName = u.bankDetails?.bankName || u.bankName || '';
                   const rawAcc = u.bankDetails?.accountNumber || u.accountNumber || '';
                   const ifsc = u.bankDetails?.ifscCode || u.ifscCode || '';
@@ -1835,9 +1729,20 @@ export default function UserManagementTab({ currentEmail, currentRole }: UserMan
 
                       {/* System Role */}
                       <td className="p-3.5">
-                        <span className={`inline-flex items-center px-2.5 py-1 rounded-md text-xs font-semibold uppercase tracking-wider border ${getRoleBadgeStyle(u.role)}`}>
-                          {u.role}
-                        </span>
+                        <div className="flex flex-wrap items-center gap-1.5">
+                          <span className={`inline-flex items-center px-2.5 py-1 rounded-md text-xs font-semibold uppercase tracking-wider border ${getRoleBadgeStyle(u.role)}`}>
+                            {normalizeRole(u.role)}
+                          </span>
+                          {(normalizeRole(u.role) === 'OWNER' || String(u.role || '').toUpperCase() === 'OWNER') && (
+                            <span 
+                              className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[11px] font-bold tracking-wider uppercase bg-amber-500/10 text-amber-400 border border-amber-500/30 shadow-sm"
+                              title="Executive Partner eligible for solar design engineering assignments"
+                            >
+                              <Sparkles className="w-3 h-3 text-[#D4AF37]" />
+                              DESIGNER ELIGIBLE
+                            </span>
+                          )}
+                        </div>
                       </td>
 
                       {/* Action Buttons */}

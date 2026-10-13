@@ -1,5 +1,14 @@
 'use client';
-import { COLLECTIONS, CLIENT_STATUS, PROJECT_STATUS, CLIENT_FIELDS, PROJECT_FIELDS } from "@/src/config/schema";
+import { 
+  COLLECTIONS, 
+  CLIENT_STATUS, 
+  PROJECT_STATUS, 
+  CLIENT_FIELDS, 
+  PROJECT_FIELDS,
+  PricingCategoryHistoryEntry,
+  ClientSubscriptionPlan,
+  CommercialModel
+} from "@/src/config/schema";
 
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { 
@@ -31,7 +40,17 @@ import {
   ArrowUpDown,
   ArrowUp,
   ArrowDown,
-  Upload
+  Upload,
+  Clock,
+  History,
+  Calendar,
+  Package,
+  Sparkles,
+  Calculator,
+  Tag,
+  ShieldCheck,
+  Check,
+  SlidersHorizontal
 } from 'lucide-react';
 import { 
   db, 
@@ -100,6 +119,11 @@ export default function ClientsTab({ currentEmail, currentRole }: ClientsTabProp
   // Edit & View
   const [editingClient, setEditingClient] = useState<ClientDocument | null>(null);
   const [viewingClient, setViewingClient] = useState<ClientDocument | null>(null);
+  const [tierHistoryClient, setTierHistoryClient] = useState<ClientDocument | null>(null);
+  const [newHistoryCategory, setNewHistoryCategory] = useState<string>('T1');
+  const [newHistoryEffectiveFrom, setNewHistoryEffectiveFrom] = useState<string>(() => new Date().toISOString().split('T')[0]);
+  const [newHistoryReason, setNewHistoryReason] = useState<string>('');
+  const [isSavingTierHistory, setIsSavingTierHistory] = useState<boolean>(false);
   const [isSaving, setIsSaving] = useState(false);
   const [deleting, setDeleting] = useState(false);
 
@@ -116,6 +140,87 @@ export default function ClientsTab({ currentEmail, currentRole }: ClientsTabProp
   });
   const [isWipeModalOpen, setIsWipeModalOpen] = useState(false);
 
+  // Open Tier History Modal
+  const openTierHistory = (client: ClientDocument) => {
+    setTierHistoryClient(client);
+    setNewHistoryCategory(client.pricingCategory && client.pricingCategory !== 'Nil' ? client.pricingCategory : (pricingCategories[0] || 'T1'));
+    setNewHistoryEffectiveFrom(new Date().toISOString().split('T')[0]);
+    setNewHistoryReason('');
+  };
+
+  // Add effective-dated tier change to history
+  const handleAddTierHistoryEntry = async () => {
+    if (!tierHistoryClient || !tierHistoryClient.id) return;
+    if (!newHistoryCategory || newHistoryCategory === 'Nil') {
+      setErrorMsg('Please select a valid pricing category.');
+      return;
+    }
+    setIsSavingTierHistory(true);
+    setErrorMsg(null);
+    try {
+      const effectiveFromIso = newHistoryEffectiveFrom 
+        ? new Date(newHistoryEffectiveFrom).toISOString() 
+        : new Date().toISOString();
+      const nowIso = new Date().toISOString();
+
+      // Existing history or initial entry
+      const existingHistory: PricingCategoryHistoryEntry[] = Array.isArray(tierHistoryClient.pricingCategoryHistory)
+        ? [...tierHistoryClient.pricingCategoryHistory]
+        : tierHistoryClient.pricingCategory && tierHistoryClient.pricingCategory !== 'Nil'
+        ? [{
+            category: tierHistoryClient.pricingCategory,
+            effectiveFrom: tierHistoryClient.createdAt || nowIso,
+            effectiveTo: effectiveFromIso,
+            updatedBy: tierHistoryClient.approvedBy || currentEmail,
+            updatedAt: tierHistoryClient.createdAt || nowIso,
+            reason: 'Initial client approval tier'
+          }]
+        : [];
+
+      // Close the currently active open entry
+      const updatedHistory = existingHistory.map((item) => {
+        if (!item.effectiveTo) {
+          return { ...item, effectiveTo: effectiveFromIso };
+        }
+        return item;
+      });
+
+      // Append new entry
+      const newEntry: PricingCategoryHistoryEntry = {
+        category: newHistoryCategory,
+        effectiveFrom: effectiveFromIso,
+        effectiveTo: null,
+        updatedBy: currentEmail,
+        updatedAt: nowIso,
+        reason: newHistoryReason.trim() || 'Tier rate adjustment'
+      };
+      updatedHistory.push(newEntry);
+
+      const clientRef = doc(db, COLLECTIONS.CLIENTS, tierHistoryClient.id);
+      await updateDoc(clientRef, {
+        pricingCategory: newHistoryCategory,
+        pricingCategoryHistory: updatedHistory,
+        updatedAt: nowIso
+      });
+
+      const updatedClient = {
+        ...tierHistoryClient,
+        pricingCategory: newHistoryCategory,
+        pricingCategoryHistory: updatedHistory
+      };
+
+      setClients(prev => prev.map(c => c.id === tierHistoryClient.id ? updatedClient : c));
+      setTierHistoryClient(updatedClient);
+      setSuccessMsg(`Pricing tier for "${tierHistoryClient.companyName}" successfully updated to ${newHistoryCategory} effective ${newHistoryEffectiveFrom}.`);
+      setNewHistoryReason('');
+      setTimeout(() => setSuccessMsg(null), 4000);
+    } catch (err: any) {
+      console.error('Error adding tier history entry:', err);
+      setErrorMsg(`Failed to update tier: ${err.message || 'Unknown error'}`);
+    } finally {
+      setIsSavingTierHistory(false);
+    }
+  };
 
   const handleSaveClient = async () => {
     if (!editingClient || !editingClient.id) return;
@@ -123,8 +228,32 @@ export default function ClientsTab({ currentEmail, currentRole }: ClientsTabProp
     setErrorMsg(null);
     try {
       const clientRef = doc(db, COLLECTIONS.CLIENTS, editingClient.id);
+      const originalClient = clients.find(c => c.id === editingClient.id);
       
-      const updateData = {
+      const nowIso = new Date().toISOString();
+      let updatedHistory = Array.isArray(editingClient.pricingCategoryHistory)
+        ? [...editingClient.pricingCategoryHistory]
+        : [];
+
+      // If category was changed directly in edit modal, track it in history
+      if (originalClient && editingClient.pricingCategory !== originalClient.pricingCategory && editingClient.pricingCategory !== 'Nil') {
+        updatedHistory = updatedHistory.map(h => {
+          if (!h.effectiveTo) {
+            return { ...h, effectiveTo: nowIso };
+          }
+          return h;
+        });
+        updatedHistory.push({
+          category: editingClient.pricingCategory || 'Nil',
+          effectiveFrom: nowIso,
+          effectiveTo: null,
+          updatedBy: currentEmail,
+          updatedAt: nowIso,
+          reason: 'Direct client edit update'
+        });
+      }
+
+      const updateData: Record<string, any> = {
         companyName: editingClient.companyName || '',
         contactPerson: editingClient.contactPerson || '',
         email: editingClient.email || '',
@@ -135,8 +264,16 @@ export default function ClientsTab({ currentEmail, currentRole }: ClientsTabProp
         submittedBy: editingClient.submittedBy || '',
         [CLIENT_FIELDS.SALES_PERSON_EMAIL]: editingClient.salesPersonEmail || editingClient.submittedBy || '',
         proposalNumber: editingClient.proposalNumber || '',
-        status: editingClient.status || CLIENT_STATUS.PENDING
+        status: editingClient.status || CLIENT_STATUS.PENDING,
+        pricingCategoryHistory: updatedHistory
       };
+
+      if (editingClient.commercialModel) {
+        updateData.commercialModel = editingClient.commercialModel;
+      }
+      if (editingClient.subscriptionPlan) {
+        updateData.subscriptionPlan = editingClient.subscriptionPlan;
+      }
       
       await updateDoc(clientRef, updateData);
       setSuccessMsg('Client updated successfully.');
@@ -401,9 +538,23 @@ export default function ClientsTab({ currentEmail, currentRole }: ClientsTabProp
       const toUpdate = clients.filter(c => (c.pricingCategory || 'Nil') === catFrom);
       
       let updatedCount = 0;
+      const nowIso = new Date().toISOString();
       toUpdate.forEach(c => {
         if (c.id) {
-          batch.update(doc(db, COLLECTIONS.CLIENTS, c.id), { pricingCategory: catTo });
+          const existing = Array.isArray(c.pricingCategoryHistory) ? [...c.pricingCategoryHistory] : [];
+          const closed = existing.map(h => (!h.effectiveTo ? { ...h, effectiveTo: nowIso } : h));
+          closed.push({
+            category: catTo,
+            effectiveFrom: nowIso,
+            effectiveTo: null,
+            updatedBy: currentEmail,
+            updatedAt: nowIso,
+            reason: `Bulk category change: moved from ${catFrom} to ${catTo}`
+          });
+          batch.update(doc(db, COLLECTIONS.CLIENTS, c.id), { 
+            pricingCategory: catTo,
+            pricingCategoryHistory: closed
+          });
           updatedCount++;
         }
       });
@@ -967,13 +1118,45 @@ const getStatusBadge = (status: string) => {
                       </span>
                     </td>
                     <td className="p-4">
-                      {getCategoryBadge(client.pricingCategory || 'Nil')}
+                      {client.commercialModel === 'FIXED_PACKAGE' ? (
+                        <div className="flex flex-col gap-1 items-start">
+                          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-purple-500/15 border border-purple-500/40 text-purple-300 font-mono text-[11px] font-semibold">
+                            <Package className="w-3 h-3 text-purple-400" />
+                            Package Plan
+                          </span>
+                          <span className="text-xs text-gray-300 font-medium">
+                            {client.subscriptionPlan?.scopeCovered || 'Pre Design'} • {client.subscriptionPlan?.projectsPerMonth || 100} PPM ({client.subscriptionPlan?.durationMonths || 3}M)
+                          </span>
+                          <span className="text-[11px] text-gray-500 font-mono">
+                            Fallback Tier: {client.pricingCategory || 'T4'}
+                          </span>
+                        </div>
+                      ) : (
+                        <div className="flex flex-col gap-1 items-start">
+                          <div className="flex items-center gap-1.5">
+                            {getCategoryBadge(client.pricingCategory || 'Nil')}
+                            <span className="text-[10px] text-gray-500 font-mono">Per kW</span>
+                          </div>
+                          {Array.isArray(client.pricingCategoryHistory) && client.pricingCategoryHistory.length > 1 && (
+                            <span className="text-[10px] text-[#D4AF37]/80 flex items-center gap-1 font-mono">
+                              <History className="w-2.5 h-2.5" /> {client.pricingCategoryHistory.length} rate periods
+                            </span>
+                          )}
+                        </div>
+                      )}
                     </td>
                     <td className="p-4">
                       {getStatusBadge(client.status)}
                     </td>
                     <td className="p-4 pr-6 text-right">
                       <div className="flex items-center justify-end gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
+                        <button
+                          onClick={() => openTierHistory(client)}
+                          className="p-1.5 text-gray-400 hover:text-[#D4AF37] bg-[#2A2A2A] hover:bg-[#D4AF37]/10 border border-[#333333] hover:border-[#D4AF37]/40 rounded-lg transition-colors cursor-pointer"
+                          title="View Pricing Tier & Plan History"
+                        >
+                          <Clock className="w-3.5 h-3.5" />
+                        </button>
                         <button
                           onClick={() => setViewingClient(client)}
                           className="p-1.5 text-gray-400 hover:text-white bg-[#2A2A2A] hover:bg-[#2A2A2A] border border-[#333333] rounded-lg transition-colors cursor-pointer"
@@ -1183,6 +1366,35 @@ const getStatusBadge = (status: string) => {
                 <p className="text-base text-gray-200">{viewingClient.pricingCategory || 'Nil'}</p>
               </div>
               <div>
+                <p className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-1">Commercial Model</p>
+                <div className="flex items-center gap-2 mt-0.5">
+                  <span className="text-xs px-2.5 py-0.5 rounded-full bg-emerald-500/10 border border-emerald-500/30 text-emerald-400 font-semibold font-mono">
+                    {viewingClient.commercialModel === 'FIXED_PACKAGE' ? 'Fixed Package Retainer' : 'Per kW Dynamic Slabs'}
+                  </span>
+                </div>
+              </div>
+              {viewingClient.commercialModel === 'FIXED_PACKAGE' && viewingClient.subscriptionPlan && (
+                <div className="md:col-span-2 p-3.5 bg-[#252525] border border-[#3A3A3A] rounded-xl space-y-2 text-xs font-mono">
+                  <div className="flex items-center justify-between text-amber-400 font-bold">
+                    <span className="flex items-center gap-1.5">
+                      <Package className="w-3.5 h-3.5" /> {viewingClient.subscriptionPlan.scopeCovered} Retainer Plan
+                    </span>
+                    <span className="text-emerald-400">
+                      ₹{viewingClient.subscriptionPlan.upfrontPrice?.toLocaleString('en-IN')} Upfront
+                    </span>
+                  </div>
+                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-[11px] text-gray-300">
+                    <div>PPM: <strong className="text-white">{viewingClient.subscriptionPlan.projectsPerMonth}</strong></div>
+                    <div>Duration: <strong className="text-white">{viewingClient.subscriptionPlan.durationMonths}M</strong></div>
+                    <div>Bonus: <strong className="text-white">{viewingClient.subscriptionPlan.bonusProjects}</strong></div>
+                    <div>Quota: <strong className="text-amber-300">{viewingClient.subscriptionPlan.totalAllowedProjects} Proj</strong></div>
+                  </div>
+                  <div className="text-[10px] text-gray-400 border-t border-[#333333] pt-1">
+                    Coverage: {viewingClient.subscriptionPlan.startDate?.split('T')[0]} → {viewingClient.subscriptionPlan.endDate?.split('T')[0]} (Status: {viewingClient.subscriptionPlan.status})
+                  </div>
+                </div>
+              )}
+              <div>
                 <p className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-1">Sales Person</p>
                 <p className="text-base text-gray-200">
                   {salesPersons.find(sp => sp.email === viewingClient.submittedBy)?.name || viewingClient.submittedBy || 'N/A'}
@@ -1196,13 +1408,39 @@ const getStatusBadge = (status: string) => {
                 <p className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-1">Status</p>
                 <div className="mt-1">{getStatusBadge(viewingClient.status)}</div>
               </div>
+              <div>
+                <p className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-1">Tier History</p>
+                <button
+                  type="button"
+                  onClick={() => {
+                    const c = viewingClient;
+                    setViewingClient(null);
+                    openTierHistory(c);
+                  }}
+                  className="mt-1 text-xs text-[#D4AF37] hover:underline flex items-center gap-1.5 cursor-pointer font-mono font-semibold"
+                >
+                  <Clock className="w-3.5 h-3.5" /> View Timeline ({viewingClient.pricingCategoryHistory?.length || 1} records)
+                </button>
+              </div>
               <div className="md:col-span-2">
                 <p className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-1">Created At</p>
                 <p className="text-base text-gray-400">{new Date(viewingClient.createdAt).toLocaleString()}</p>
               </div>
             </div>
             
-            <div className="pt-6 mt-6 border-t border-[#2A2A2A] flex justify-end">
+            <div className="pt-6 mt-6 border-t border-[#2A2A2A] flex items-center justify-between">
+              <button
+                type="button"
+                onClick={() => {
+                  const c = viewingClient;
+                  setViewingClient(null);
+                  openTierHistory(c);
+                }}
+                className="px-4 py-2 bg-[#2A2A2A] hover:bg-[#333333] border border-[#D4AF37]/30 text-[#D4AF37] rounded-lg text-xs font-semibold font-mono flex items-center gap-1.5 cursor-pointer"
+              >
+                <History className="w-3.5 h-3.5" />
+                Inspect Tier History
+              </button>
               <button
                 onClick={() => setViewingClient(null)}
                 className="px-5 py-2.5 bg-[#2A2A2A] hover:bg-[#2A2A2A] border border-[#333333] rounded-lg text-sm font-semibold text-gray-200 cursor-pointer transition-colors"
@@ -1333,23 +1571,48 @@ const getStatusBadge = (status: string) => {
                   <option value="rejected">Rejected</option>
                 </select>
               </div>
+              <div className="space-y-1.5 md:col-span-2">
+                <label className="text-xs font-semibold text-gray-400 uppercase tracking-wider pl-1">Commercial Model</label>
+                <select
+                  value={editingClient.commercialModel || 'PER_KW'}
+                  onChange={(e) => setEditingClient({...editingClient, commercialModel: e.target.value as CommercialModel})}
+                  className="w-full px-3 py-2 bg-[#2A2A2A] border border-[#2A2A2A] focus:border-[#D4AF37] rounded-lg text-sm text-white focus:outline-none transition-all cursor-pointer font-mono"
+                >
+                  <option value="PER_KW">Standard Per kW Slabs</option>
+                  <option value="FIXED_PACKAGE">Fixed Package Retainer Plan</option>
+                </select>
+              </div>
             </div>
 
             <div className="pt-6 mt-6 border-t border-[#2A2A2A] flex items-center justify-between gap-3">
-              <button
-                type="button"
-                onClick={() => {
-                  const idToDelete = editingClient.id;
-                  const name = editingClient.companyName;
-                  setEditingClient(null);
-                  if (idToDelete) handleDelete(idToDelete, 'clients', name);
-                }}
-                className="px-4 py-2.5 bg-rose-500/10 hover:bg-rose-500/20 border border-rose-500/30 hover:border-rose-400 text-rose-400 rounded-lg text-sm font-semibold cursor-pointer transition-colors flex items-center gap-1.5"
-                title="Permanently Delete Client"
-              >
-                <Trash2 className="w-3.5 h-3.5" />
-                Delete Record
-              </button>
+              <div className="flex items-center gap-3">
+                <button
+                  type="button"
+                  onClick={() => {
+                    const idToDelete = editingClient.id;
+                    const name = editingClient.companyName;
+                    setEditingClient(null);
+                    if (idToDelete) handleDelete(idToDelete, 'clients', name);
+                  }}
+                  className="px-4 py-2.5 bg-rose-500/10 hover:bg-rose-500/20 border border-rose-500/30 hover:border-rose-400 text-rose-400 rounded-lg text-sm font-semibold cursor-pointer transition-colors flex items-center gap-1.5"
+                  title="Permanently Delete Client"
+                >
+                  <Trash2 className="w-3.5 h-3.5" />
+                  Delete Record
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    const c = editingClient;
+                    setEditingClient(null);
+                    openTierHistory(c);
+                  }}
+                  className="px-3.5 py-2.5 bg-[#2A2A2A] hover:bg-[#333333] border border-[#D4AF37]/30 text-[#D4AF37] rounded-lg text-xs font-semibold cursor-pointer transition-colors flex items-center gap-1.5 font-mono"
+                >
+                  <Clock className="w-3.5 h-3.5" />
+                  Tier History ({editingClient.pricingCategoryHistory?.length || 1})
+                </button>
+              </div>
               <div className="flex items-center gap-3">
                 <button
                   onClick={() => setEditingClient(null)}
@@ -1406,6 +1669,206 @@ const getStatusBadge = (status: string) => {
         inputPlaceholder='Type "WIPE" to confirm'
         isLoading={loading}
       />
+
+      {/* Tier History & Subscription Plan Modal */}
+      {tierHistoryClient && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-4 animate-in fade-in duration-200 overflow-y-auto">
+          <div className="w-full max-w-2xl bg-[#1E1E1E] border border-[#333333] rounded-2xl p-6 md:p-8 space-y-6 shadow-2xl relative text-gray-200 my-8">
+            {/* Header */}
+            <div className="flex items-center justify-between pb-3 border-b border-[#2A2A2A]">
+              <div>
+                <h3 className="text-lg font-bold text-white flex items-center gap-2">
+                  <Clock className="w-5 h-5 text-[#D4AF37]" />
+                  Pricing Tier &amp; Plan History
+                </h3>
+                <p className="text-xs text-gray-400 mt-0.5">
+                  Client: <strong className="text-white">{tierHistoryClient.companyName}</strong> ({tierHistoryClient.city})
+                </p>
+              </div>
+              <button
+                onClick={() => setTierHistoryClient(null)}
+                className="text-gray-400 hover:text-white p-1 rounded-lg hover:bg-[#2A2A2A] transition-colors cursor-pointer"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            {/* Current Active Plan / Commercial Model Overview */}
+            <div className="p-4 bg-[#252525] border border-[#333333] rounded-xl space-y-3">
+              <div className="flex items-center justify-between">
+                <span className="text-xs uppercase font-semibold tracking-wider text-gray-400 flex items-center gap-1.5">
+                  <Tag className="w-3.5 h-3.5 text-[#D4AF37]" /> Active Commercial Configuration
+                </span>
+                <span className="text-xs px-2.5 py-0.5 rounded-full bg-emerald-500/10 border border-emerald-500/30 text-emerald-400 font-semibold font-mono">
+                  {tierHistoryClient.commercialModel === 'FIXED_PACKAGE' ? 'Fixed Package Retainer' : 'Per kW Dynamic Slabs'}
+                </span>
+              </div>
+
+              {tierHistoryClient.commercialModel === 'FIXED_PACKAGE' && tierHistoryClient.subscriptionPlan ? (
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 pt-1 font-mono text-xs">
+                  <div className="p-2.5 bg-[#1E1E1E] border border-[#3A3A3A] rounded-lg">
+                    <span className="text-[10px] text-gray-400 block uppercase">Scope</span>
+                    <span className="font-bold text-white text-sm">{tierHistoryClient.subscriptionPlan.scopeCovered}</span>
+                  </div>
+                  <div className="p-2.5 bg-[#1E1E1E] border border-[#3A3A3A] rounded-lg">
+                    <span className="text-[10px] text-gray-400 block uppercase">Allowed Quota</span>
+                    <span className="font-bold text-amber-400 text-sm">{tierHistoryClient.subscriptionPlan.totalAllowedProjects} proj</span>
+                  </div>
+                  <div className="p-2.5 bg-[#1E1E1E] border border-[#3A3A3A] rounded-lg">
+                    <span className="text-[10px] text-gray-400 block uppercase">Retainer Fee</span>
+                    <span className="font-bold text-emerald-400 text-sm">₹{tierHistoryClient.subscriptionPlan.upfrontPrice?.toLocaleString('en-IN')}</span>
+                  </div>
+                  <div className="p-2.5 bg-[#1E1E1E] border border-[#3A3A3A] rounded-lg">
+                    <span className="text-[10px] text-gray-400 block uppercase">Active Period</span>
+                    <span className="font-medium text-gray-300 text-[11px] block mt-0.5">
+                      {tierHistoryClient.subscriptionPlan.startDate?.split('T')[0]} → {tierHistoryClient.subscriptionPlan.endDate?.split('T')[0]}
+                    </span>
+                  </div>
+                </div>
+              ) : null}
+
+              <div className="flex items-center justify-between text-xs font-mono pt-1 text-gray-300">
+                <span>Current Active Slab Tier: <strong className="text-amber-400">{tierHistoryClient.pricingCategory || 'Nil'}</strong></span>
+                <span>History Records: <strong className="text-white">{tierHistoryClient.pricingCategoryHistory?.length || 1}</strong></span>
+              </div>
+            </div>
+
+            {/* Effective-Dated Tier History Timeline */}
+            <div className="space-y-3">
+              <h4 className="text-xs uppercase font-bold text-gray-400 tracking-wider flex items-center gap-1.5">
+                <History className="w-3.5 h-3.5 text-gray-400" /> Tier Change Timeline
+              </h4>
+
+              <div className="space-y-2 max-h-60 overflow-y-auto pr-1">
+                {(!tierHistoryClient.pricingCategoryHistory || tierHistoryClient.pricingCategoryHistory.length === 0) ? (
+                  <div className="p-4 bg-[#252525] border border-[#333333] rounded-xl text-center text-xs text-gray-400">
+                    <p>No historical tier transitions recorded yet.</p>
+                    <p className="text-gray-500 mt-1">Current tier: {tierHistoryClient.pricingCategory || 'Nil'}</p>
+                  </div>
+                ) : (
+                  [...tierHistoryClient.pricingCategoryHistory]
+                    .sort((a, b) => new Date(b.effectiveFrom).getTime() - new Date(a.effectiveFrom).getTime())
+                    .map((item, idx) => {
+                      const isActive = !item.effectiveTo;
+                      return (
+                        <div 
+                          key={idx} 
+                          className={`p-3 rounded-xl border transition-all text-xs font-mono flex items-start justify-between gap-3 ${
+                            isActive 
+                              ? 'bg-amber-500/10 border-amber-500/40 text-gray-100 shadow-sm' 
+                              : 'bg-[#252525] border-[#333333] text-gray-400'
+                          }`}
+                        >
+                          <div className="space-y-1">
+                            <div className="flex items-center gap-2">
+                              {getCategoryBadge(item.category)}
+                              {isActive ? (
+                                <span className="px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 text-[10px] font-bold uppercase">
+                                  Current Active
+                                </span>
+                              ) : (
+                                <span className="text-[10px] text-gray-500 uppercase">
+                                  Historical
+                                </span>
+                              )}
+                            </div>
+                            <div className="text-[11px] text-gray-300">
+                              <span>Effective: <strong>{new Date(item.effectiveFrom).toLocaleDateString()}</strong></span>
+                              <span> → </span>
+                              <span>{item.effectiveTo ? new Date(item.effectiveTo).toLocaleDateString() : 'Present (Ongoing)'}</span>
+                            </div>
+                            {item.reason && (
+                              <p className="text-[11px] text-gray-400 italic">
+                                Note: {item.reason}
+                              </p>
+                            )}
+                          </div>
+
+                          <div className="text-right text-[10px] text-gray-500 shrink-0">
+                            {item.updatedBy && <div>By: {item.updatedBy.split('@')[0]}</div>}
+                            {item.updatedAt && <div>{new Date(item.updatedAt).toLocaleDateString()}</div>}
+                          </div>
+                        </div>
+                      );
+                    })
+                )}
+              </div>
+            </div>
+
+            {/* Schedule / Add Tier Change Form */}
+            <div className="p-4 bg-[#252525] border border-[#333333] rounded-xl space-y-3">
+              <h4 className="text-xs font-bold text-white uppercase tracking-wider flex items-center gap-1.5">
+                <SlidersHorizontal className="w-3.5 h-3.5 text-[#D4AF37]" /> Update / Schedule Effective-Dated Tier Change
+              </h4>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs">
+                <div>
+                  <label className="text-[10px] text-gray-400 uppercase font-semibold block mb-1">New Pricing Tier</label>
+                  <select
+                    value={newHistoryCategory}
+                    onChange={(e) => setNewHistoryCategory(e.target.value)}
+                    className="w-full px-3 py-2 bg-[#1E1E1E] border border-[#3A3A3A] rounded-lg text-amber-400 font-mono focus:border-[#D4AF37] focus:outline-none"
+                  >
+                    {pricingCategories.map(c => (
+                      <option key={c} value={c}>{c}</option>
+                    ))}
+                  </select>
+                </div>
+                <div>
+                  <label className="text-[10px] text-gray-400 uppercase font-semibold block mb-1">Effective From Date</label>
+                  <input
+                    type="date"
+                    value={newHistoryEffectiveFrom}
+                    onChange={(e) => setNewHistoryEffectiveFrom(e.target.value)}
+                    className="w-full px-3 py-2 bg-[#1E1E1E] border border-[#3A3A3A] rounded-lg text-gray-200 font-mono focus:border-[#D4AF37] focus:outline-none"
+                  />
+                </div>
+                <div className="sm:col-span-2">
+                  <label className="text-[10px] text-gray-400 uppercase font-semibold block mb-1">Reason / Note (Optional)</label>
+                  <input
+                    type="text"
+                    placeholder="e.g. Annual commercial rate renewal, Volume slab upgrade"
+                    value={newHistoryReason}
+                    onChange={(e) => setNewHistoryReason(e.target.value)}
+                    className="w-full px-3 py-2 bg-[#1E1E1E] border border-[#3A3A3A] rounded-lg text-gray-200 placeholder-gray-600 focus:border-[#D4AF37] focus:outline-none"
+                  />
+                </div>
+              </div>
+
+              <div className="pt-2 flex justify-end">
+                <button
+                  type="button"
+                  onClick={handleAddTierHistoryEntry}
+                  disabled={isSavingTierHistory || !newHistoryCategory || newHistoryCategory === 'Nil'}
+                  className="px-4 py-2 bg-[#D4AF37] hover:bg-[#B3932F] text-black font-bold text-xs rounded-lg cursor-pointer disabled:opacity-50 transition-all flex items-center gap-1.5"
+                >
+                  {isSavingTierHistory ? (
+                    <>
+                      <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                      Saving Tier Change...
+                    </>
+                  ) : (
+                    <>
+                      <Check className="w-3.5 h-3.5" />
+                      Apply Tier Change
+                    </>
+                  )}
+                </button>
+              </div>
+            </div>
+
+            {/* Footer */}
+            <div className="pt-2 border-t border-[#2A2A2A] flex justify-end">
+              <button
+                type="button"
+                onClick={() => setTierHistoryClient(null)}
+                className="px-5 py-2 bg-[#2A2A2A] hover:bg-[#333333] border border-[#3A3A3A] rounded-lg text-sm text-gray-300 transition-colors cursor-pointer"
+              >
+                Close
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

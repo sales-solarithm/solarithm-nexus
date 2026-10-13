@@ -9,8 +9,11 @@ import {
   Blocks,
   ArrowRight,
   Clock,
-  RefreshCw
+  RefreshCw,
+  Compass,
+  CheckCircle2
 } from 'lucide-react';
+import ProjectEntryModal from './ProjectEntryModal';
 import { 
   db,
   SUPER_ADMIN_EMAILS, 
@@ -80,6 +83,8 @@ export default function ConsoleDashboard({ email, role, name, onNavigateTab }: C
 
   const [metrics, setMetrics] = useState<OverviewMetrics>(getInitialMetrics);
   const [isRefreshing, setIsRefreshing] = useState(false);
+  const [isProjectEntryModalOpen, setIsProjectEntryModalOpen] = useState(false);
+  const [projectSuccessMsg, setProjectSuccessMsg] = useState<string | null>(null);
 
   // Dynamic data listener binding Firestore collections with fallback to localStorage
   useEffect(() => {
@@ -122,7 +127,7 @@ export default function ConsoleDashboard({ email, role, name, onNavigateTab }: C
         });
         syncEmployeeMetrics();
       }, (err) => {
-        console.warn('Users onSnapshot error, attempting fallback getDocs:', err);
+        console.warn('Snapshot listener caught:', err);
       });
 
       const empQuery = query(collection(db, COLLECTIONS.EMPLOYEES || 'employees'));
@@ -134,7 +139,7 @@ export default function ConsoleDashboard({ email, role, name, onNavigateTab }: C
         });
         syncEmployeeMetrics();
       }, (err) => {
-        console.warn('Employees onSnapshot error:', err);
+        console.warn('Snapshot listener caught:', err);
       });
 
       // 2. Total Clients: Count active records in CLIENTS collection (status !== 'rejected')
@@ -156,7 +161,7 @@ export default function ConsoleDashboard({ email, role, name, onNavigateTab }: C
         setMetrics(prev => ({ ...prev, totalClients: activeClients }));
         updatePendingApprovals();
       }, (err) => {
-        console.warn('Clients onSnapshot error:', err);
+        console.warn('Snapshot listener caught:', err);
       });
 
       // 3. Pending Approvals from Projects (status === IN_VERIFICATION)
@@ -168,7 +173,7 @@ export default function ConsoleDashboard({ email, role, name, onNavigateTab }: C
         pendingProjectsCount = snap.size;
         updatePendingApprovals();
       }, (err) => {
-        console.warn('Projects onSnapshot error:', err);
+        console.warn('Snapshot listener caught:', err);
       });
 
       // 4. Pending Approvals from Change Requests (status === 'pending')
@@ -180,7 +185,7 @@ export default function ConsoleDashboard({ email, role, name, onNavigateTab }: C
         pendingChangeRequestsCount = snap.size;
         updatePendingApprovals();
       }, (err) => {
-        console.warn('ChangeRequests onSnapshot error:', err);
+        console.warn('Snapshot listener caught:', err);
       });
 
       // 5. Registered Apps: Count active applications in APPS collection
@@ -195,7 +200,7 @@ export default function ConsoleDashboard({ email, role, name, onNavigateTab }: C
         });
         setMetrics(prev => ({ ...prev, registeredApps: activeApps }));
       }, (err) => {
-        console.warn('Apps onSnapshot error:', err);
+        console.warn('Snapshot listener caught:', err);
       });
 
       // 6. Pending Password Reset Approvals from 'approvals' where type === 'PASSWORD_RESET_REQUEST'
@@ -211,7 +216,7 @@ export default function ConsoleDashboard({ email, role, name, onNavigateTab }: C
         pendingPasswordsCount = count;
         updatePendingApprovals();
       }, (err) => {
-        console.warn('Approvals onSnapshot error:', err);
+        console.warn('Snapshot listener caught:', err);
       });
 
     } catch (err) {
@@ -361,17 +366,36 @@ export default function ConsoleDashboard({ email, role, name, onNavigateTab }: C
           </p>
         </div>
 
-        <button
-          id="refresh-overview-metrics-btn"
-          onClick={handleManualRefresh}
-          disabled={isRefreshing}
-          className="px-3 py-1.5 rounded-lg bg-[#1E1E1E] hover:bg-[#282828] border border-[#2E2E2E] hover:border-[#D4AF37]/40 text-xs font-medium text-gray-300 transition-all flex items-center gap-2 cursor-pointer disabled:opacity-50"
-          title="Refresh metrics from database"
-        >
-          <RefreshCw className={`w-3.5 h-3.5 text-[#D4AF37] ${isRefreshing ? 'animate-spin' : ''}`} />
-          <span className="hidden sm:inline">Sync Metrics</span>
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={() => setIsProjectEntryModalOpen(true)}
+            className="px-3 py-1.5 rounded-lg bg-gradient-to-r from-[#B38728] via-[#D4AF37] to-[#AA771C] text-black font-bold text-xs hover:brightness-110 active:scale-[0.99] transition-all flex items-center gap-1.5 shadow-md shadow-[#D4AF37]/10 cursor-pointer"
+          >
+            <Compass className="w-3.5 h-3.5" />
+            <span className="hidden sm:inline">+ New Project Entry</span>
+            <span className="sm:hidden">+ Project</span>
+          </button>
+
+          <button
+            id="refresh-overview-metrics-btn"
+            onClick={handleManualRefresh}
+            disabled={isRefreshing}
+            className="px-3 py-1.5 rounded-lg bg-[#1E1E1E] hover:bg-[#282828] border border-[#2E2E2E] hover:border-[#D4AF37]/40 text-xs font-medium text-gray-300 transition-all flex items-center gap-2 cursor-pointer disabled:opacity-50"
+            title="Refresh metrics from database"
+          >
+            <RefreshCw className={`w-3.5 h-3.5 text-[#D4AF37] ${isRefreshing ? 'animate-spin' : ''}`} />
+            <span className="hidden sm:inline">Sync Metrics</span>
+          </button>
+        </div>
       </div>
+
+      {projectSuccessMsg && (
+        <div className="p-3.5 bg-emerald-500/10 border border-emerald-500/30 rounded-xl text-xs sm:text-sm text-emerald-400 flex items-center gap-2 animate-in fade-in">
+          <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
+          <span>{projectSuccessMsg}</span>
+        </div>
+      )}
 
       {/* Hero Welcome Banner */}
       <div className="w-full relative overflow-hidden rounded-xl bg-[#1E1E1E] border border-[#2A2A2A] p-6 md:p-8 shadow-xl">

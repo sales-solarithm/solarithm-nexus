@@ -25,8 +25,11 @@ import {
   Users,
   IndianRupee,
   Briefcase,
-  UserCheck
+  UserCheck,
+  Package
 } from 'lucide-react';
+import PackagePlansMatrix from './PackagePlansMatrix';
+import { isZeroOrPositive, sanitizeFirestorePayload } from '@/lib/firestoreSanitizer';
 import { 
   db, 
   SUPER_ADMIN_EMAILS, 
@@ -65,14 +68,14 @@ type CommissionMasterState = {
   sales: Record<string, Record<string, CapacityRow[]>>;
 };
 
-const DEFAULT_COMMISSION_ROWS: CapacityRow[] = [];
+const DEFAULT_COMMISSION_ROWS: CapacityRow[] = DEFAULT_12_CAPACITY_ROWS.map((row) => ({ ...row }));
 
 export default function PriceEngineTab({ currentEmail, currentRole }: PriceEngineTabProps) {
   const isSuperAdmin = SUPER_ADMIN_EMAILS.includes(currentEmail.toLowerCase());
   const canManagePricing = isSuperAdmin || currentRole === 'owner' || currentRole === 'admin';
 
   // State
-  const [activeMatrixTab, setActiveMatrixTab] = useState<'client-pricing' | 'employee-commission'>('client-pricing');
+  const [activeMatrixTab, setActiveMatrixTab] = useState<'client-pricing' | 'employee-commission' | 'package-plans'>('client-pricing');
   const [allRules, setAllRules] = useState<(PricingRuleDocument & { id: string })[]>([]);
   const [loadingRules, setLoadingRules] = useState(true);
 
@@ -261,7 +264,10 @@ export default function PriceEngineTab({ currentEmail, currentRole }: PriceEngin
   };
 
   const handleCommissionUpdateRow = (index: number, field: keyof CapacityRow, value: any) => {
-    const updated = currentCommissionRows.map((r, idx) => (idx === index ? { ...r, [field]: value } : r));
+    const finalValue = field === 'price'
+      ? (typeof value === 'number' ? (isNaN(value) ? 0 : value) : (value === '' ? 0 : (isNaN(parseFloat(value)) ? 0 : parseFloat(value))))
+      : value;
+    const updated = currentCommissionRows.map((r, idx) => (idx === index ? { ...r, [field]: finalValue } : r));
     updateActiveCommissionSlice(updated);
   };
 
@@ -271,8 +277,8 @@ export default function PriceEngineTab({ currentEmail, currentRole }: PriceEngin
   };
 
   const handleResetCommissionDefaultRows = () => {
-    updateActiveCommissionSlice([]);
-    setSuccessMsg('Commission rows reset to empty list.');
+    updateActiveCommissionSlice(DEFAULT_12_CAPACITY_ROWS.map((row) => ({ ...row })));
+    setSuccessMsg('Reset to canonical 12 capacity tiers.');
     setTimeout(() => setSuccessMsg(null), 3000);
   };
 
@@ -647,8 +653,11 @@ export default function PriceEngineTab({ currentEmail, currentRole }: PriceEngin
   };
 
   const handleUpdateRow = (index: number, field: keyof CapacityRow, value: any) => {
+    const finalValue = field === 'price'
+      ? (typeof value === 'number' ? (isNaN(value) ? 0 : value) : (value === '' ? 0 : (isNaN(parseFloat(value)) ? 0 : parseFloat(value))))
+      : value;
     setCapacityRows((prev) =>
-      prev.map((r, idx) => (idx === index ? { ...r, [field]: value } : r))
+      prev.map((r, idx) => (idx === index ? { ...r, [field]: finalValue } : r))
     );
   };
 
@@ -657,8 +666,8 @@ export default function PriceEngineTab({ currentEmail, currentRole }: PriceEngin
   };
 
   const handleResetDefaultRows = () => {
-    setCapacityRows([]);
-    setSuccessMsg('Capacity rows reset to empty list.');
+    setCapacityRows(DEFAULT_12_CAPACITY_ROWS.map((row) => ({ ...row })));
+    setSuccessMsg('Reset to canonical 12 capacity tiers.');
     setTimeout(() => setSuccessMsg(null), 3000);
   };
 
@@ -907,6 +916,124 @@ export default function PriceEngineTab({ currentEmail, currentRole }: PriceEngin
     setSuccessMsg('Commission matrix CSV template exported.');
     setTimeout(() => setSuccessMsg(null), 3000);
   };
+
+  // Download Package Plans Template (CSV Export)
+  const handleDownloadPackagePlansTemplate = () => {
+    const csvRows = [
+      ['Scope', 'ProjectsPerMonth', 'DurationMonths', 'UpfrontPrice', 'BonusProjects', 'TotalAllowedProjects'],
+      ['Pre Design', 100, 1, 25000, 0, 100],
+      ['Pre Design', 100, 3, 70000, 15, 315],
+      ['Pre Design', 100, 6, 130000, 40, 640],
+      ['Pre Design', 200, 1, 48000, 0, 200],
+      ['Pre Design', 200, 3, 135000, 30, 630],
+      ['Pre Design', 200, 6, 250000, 80, 1280],
+      ['Pre Design', 300, 1, 68000, 0, 300],
+      ['Pre Design', 300, 3, 190000, 50, 950],
+      ['Pre Design', 300, 6, 350000, 120, 1920],
+      ['Post Design', 100, 1, 30000, 0, 100],
+      ['Post Design', 100, 3, 85000, 15, 315],
+      ['Post Design', 100, 6, 160000, 40, 640],
+      ['Post Design', 200, 1, 58000, 0, 200],
+      ['Post Design', 200, 3, 165000, 30, 630],
+      ['Post Design', 200, 6, 310000, 80, 1280],
+      ['Post Design', 300, 1, 82000, 0, 300],
+      ['Post Design', 300, 3, 230000, 50, 950],
+      ['Post Design', 300, 6, 425000, 120, 1920]
+    ];
+
+    const csvContent = 'data:text/csv;charset=utf-8,' + csvRows.map((e) => e.join(',')).join('\n');
+    const encodedUri = encodeURI(csvContent);
+    const link = document.createElement('a');
+    link.setAttribute('href', encodedUri);
+    link.setAttribute('download', 'PackagePlans_Template.csv');
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+
+    setSuccessMsg('Package plans CSV template exported.');
+    setTimeout(() => setSuccessMsg(null), 3000);
+  };
+
+  // Process Package Plan Data from imported file
+  const processPackagePlanData = async (rawRows: any[][]) => {
+    try {
+      if (rawRows.length <= 1) {
+        setErrorMsg('File is empty or missing data rows.');
+        return;
+      }
+      let headerIdx = -1;
+      let scopeIdx = 0;
+      let ppmIdx = 1;
+      let durIdx = 2;
+      let upfrontIdx = 3;
+      let bonusIdx = 4;
+      let statusIdx = 6;
+
+      for (let r = 0; r < Math.min(5, rawRows.length); r++) {
+        const row = rawRows[r].map((c) => String(c).trim().toLowerCase());
+        if (row.some((c) => /scope|project|month|upfront|bonus/i.test(c))) {
+          headerIdx = r;
+          row.forEach((col, idx) => {
+            if (/scope/i.test(col)) scopeIdx = idx;
+            else if (/project.*month|ppm|projectspermonth/i.test(col)) ppmIdx = idx;
+            else if (/duration|month/i.test(col)) durIdx = idx;
+            else if (/upfront|price|fee/i.test(col)) upfrontIdx = idx;
+            else if (/bonus/i.test(col)) bonusIdx = idx;
+            else if (/status/i.test(col)) statusIdx = idx;
+          });
+          break;
+        }
+      }
+
+      const startIndex = headerIdx !== -1 ? headerIdx + 1 : 1;
+      const batch = writeBatch(db);
+      let count = 0;
+
+      for (let i = startIndex; i < rawRows.length; i++) {
+        const row = rawRows[i];
+        if (!row || row.length === 0 || row.every((c) => c === undefined || c === null || c === '')) continue;
+
+        const rawScope = String(row[scopeIdx] || 'Pre Design').trim();
+        const ppm = isZeroOrPositive(row[ppmIdx]) ? parseInt(String(row[ppmIdx]), 10) || 100 : 100;
+        const dur = isZeroOrPositive(row[durIdx]) ? parseInt(String(row[durIdx]), 10) || 1 : 1;
+        const upfront = isZeroOrPositive(row[upfrontIdx]) ? parseFloat(String(row[upfrontIdx])) || 0 : 0;
+        const bonus = isZeroOrPositive(row[bonusIdx]) ? parseInt(String(row[bonusIdx]), 10) || 0 : 0;
+        const status = String(row[statusIdx] || 'active').trim().toLowerCase() === 'inactive' ? 'inactive' : 'active';
+        const total = ppm * dur + bonus;
+
+        const planId = `${rawScope.toLowerCase().replace(/[^a-z0-9]/g, '_')}_${ppm}_${dur}m`;
+        const planRef = doc(db, COLLECTIONS.PACKAGE_PLANS, planId);
+
+        const payload = sanitizeFirestorePayload({
+          id: planId,
+          scope: rawScope,
+          projectsPerMonth: ppm,
+          durationMonths: dur,
+          upfrontPrice: upfront,
+          bonusProjects: bonus,
+          totalAllowedProjects: total,
+          status,
+          updatedAt: new Date().toISOString(),
+          createdAt: new Date().toISOString()
+        });
+
+        batch.set(planRef, payload, { merge: true });
+        count++;
+      }
+
+      if (count > 0) {
+        await batch.commit();
+        setSuccessMsg(`Successfully imported and committed ${count} package plans to /${COLLECTIONS.PACKAGE_PLANS}.`);
+        setTimeout(() => setSuccessMsg(null), 4000);
+      } else {
+        setErrorMsg('No valid package plan rows found in file.');
+      }
+    } catch (err: any) {
+      console.error('Package plans import error:', err);
+      setErrorMsg(`Failed to import package plans: ${err?.message || 'Server error'}`);
+    }
+  };
+
 
   // Helper to parse file into 2D rows (supports .xlsx, .xls, .csv, .txt)
   const parseWorkbookRows = async (file: File): Promise<any[][]> => {
@@ -1326,8 +1453,14 @@ export default function PriceEngineTab({ currentEmail, currentRole }: PriceEngin
         row.some((cell) => /\bt1\b|\bt2\b|\bt3\b|\bt4\b|\bt5\b|category/i.test(String(cell)))
       );
 
-      const targetMode: 'commission' | 'pricing' =
-        isCommission && !isPricing
+      const isPackagePlan = sampleRows.some((row) =>
+        row.some((cell) => /bonus.*project|projectspermonth|upfront.*price|package.*plan|durationmonths|totalallowed/i.test(String(cell)))
+      );
+
+      const targetMode: 'commission' | 'pricing' | 'package-plans' =
+        isPackagePlan || activeMatrixTab === 'package-plans'
+          ? 'package-plans'
+          : isCommission && !isPricing
           ? 'commission'
           : isPricing && !isCommission
           ? 'pricing'
@@ -1335,7 +1468,9 @@ export default function PriceEngineTab({ currentEmail, currentRole }: PriceEngin
           ? 'commission'
           : 'pricing';
 
-      if (targetMode === 'commission') {
+      if (targetMode === 'package-plans') {
+        await processPackagePlanData(rows);
+      } else if (targetMode === 'commission') {
         if (allCommissionRules.length > 0) {
           setCsvOverwriteModal({
             isOpen: true,
@@ -1443,8 +1578,10 @@ export default function PriceEngineTab({ currentEmail, currentRole }: PriceEngin
           <p className="text-sm text-gray-400 mt-1">
             {activeMatrixTab === 'client-pricing' ? (
               <>Configure dynamic capacity pricing rules saved in the <code className="text-amber-400 font-mono">pricingRules</code> collection.</>
-            ) : (
+            ) : activeMatrixTab === 'employee-commission' ? (
               <>Configure role-based employee commission tiers saved in the <code className="text-amber-400 font-mono">commissionRules</code> collection.</>
+            ) : (
+              <>Configure subscription tiers, project quotas, and upfront package pricing saved in the <code className="text-amber-400 font-mono">packagePlans</code> collection.</>
             )}
           </p>
         </div>
@@ -1470,7 +1607,13 @@ export default function PriceEngineTab({ currentEmail, currentRole }: PriceEngin
           </button>
 
           <button
-            onClick={activeMatrixTab === 'client-pricing' ? handleDownloadTemplate : handleDownloadCommissionTemplate}
+            onClick={
+              activeMatrixTab === 'client-pricing'
+                ? handleDownloadTemplate
+                : activeMatrixTab === 'employee-commission'
+                ? handleDownloadCommissionTemplate
+                : handleDownloadPackagePlansTemplate
+            }
             className="px-3 py-2 bg-[#2A2A2A] hover:bg-[#333333] border border-[#2A2A2A] hover:border-[#D4AF37]/50 rounded-lg text-sm font-medium text-gray-200 transition-all flex items-center gap-1.5 cursor-pointer"
           >
             <Download className="w-3.5 h-3.5 text-[#D4AF37]" />
@@ -1511,11 +1654,28 @@ export default function PriceEngineTab({ currentEmail, currentRole }: PriceEngin
             <Users className="w-3.5 h-3.5" />
             Employee Commission Matrix
           </button>
+          <button
+            onClick={() => setActiveMatrixTab('package-plans')}
+            className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-bold uppercase tracking-wider transition-all cursor-pointer ${
+              activeMatrixTab === 'package-plans'
+                ? 'bg-gradient-to-r from-[#B38728] via-[#D4AF37] to-[#AA771C] text-black shadow-md shadow-[#D4AF37]/15'
+                : 'text-gray-400 hover:text-white hover:bg-[#2A2A2A]'
+            }`}
+          >
+            <Package className="w-3.5 h-3.5" />
+            Subscription &amp; Package Plans
+          </button>
         </div>
 
         <div className="text-sm text-gray-500 font-mono flex items-center gap-1.5">
           <span className="w-2 h-2 rounded-full bg-[#D4AF37]" />
-          <span>Active View: <strong className="text-gray-200">{activeMatrixTab === 'client-pricing' ? 'Client Pricing Matrix' : 'Employee Commission Matrix'}</strong></span>
+          <span>Active View: <strong className="text-gray-200">
+            {activeMatrixTab === 'client-pricing'
+              ? 'Client Pricing Matrix'
+              : activeMatrixTab === 'employee-commission'
+              ? 'Employee Commission Matrix'
+              : 'Subscription & Package Plans'}
+          </strong></span>
         </div>
       </div>
 
@@ -1740,12 +1900,12 @@ export default function PriceEngineTab({ currentEmail, currentRole }: PriceEngin
                         {/* Price Number Input */}
                         <td className="p-3.5">
                           <div className="relative">
-                            <span className="absolute left-2.5 top-1/2 -translate-y-1/2 text-gray-500 font-mono text-sm">$</span>
+                            <span className="absolute left-2.5 top-1/2 -translate-y-1/2 text-gray-500 font-mono text-sm">₹</span>
                             <input
                               type="number"
                               step="any"
-                              value={row.price}
-                              onChange={(e) => handleUpdateRow(index, 'price', parseFloat(e.target.value) || 0)}
+                              value={row.price ?? 0}
+                              onChange={(e) => handleUpdateRow(index, 'price', e.target.value)}
                               className="w-full pl-6 pr-3 py-1.5 bg-[#2A2A2A] border border-[#2A2A2A] focus:border-[#D4AF37] rounded-lg text-sm text-emerald-400 font-mono font-bold focus:outline-none"
                             />
                           </div>
@@ -1815,7 +1975,7 @@ export default function PriceEngineTab({ currentEmail, currentRole }: PriceEngin
             </button>
           </div>
         </>
-      ) : (
+      ) : activeMatrixTab === 'employee-commission' ? (
         <>
           {/* 1. Commission Role & Max Cap Selector */}
           <div className="w-full bg-[#1E1E1E] border border-[#2A2A2A] rounded-xl p-4 sm:p-5 grid grid-cols-1 md:grid-cols-2 gap-4 sm:gap-6 shadow-md">
@@ -2044,8 +2204,8 @@ export default function PriceEngineTab({ currentEmail, currentRole }: PriceEngin
                             <input
                               type="number"
                               step="any"
-                              value={row.price}
-                              onChange={(e) => handleCommissionUpdateRow(index, 'price', parseFloat(e.target.value) || 0)}
+                              value={row.price ?? 0}
+                              onChange={(e) => handleCommissionUpdateRow(index, 'price', e.target.value)}
                               className="w-full pl-6 pr-3 py-1.5 bg-[#2A2A2A] border border-[#2A2A2A] focus:border-[#D4AF37] rounded-lg text-sm text-emerald-400 font-mono font-bold focus:outline-none"
                             />
                           </div>
@@ -2125,6 +2285,11 @@ export default function PriceEngineTab({ currentEmail, currentRole }: PriceEngin
             </div>
           </div>
         </>
+      ) : (
+        <PackagePlansMatrix 
+          onNotifySuccess={(msg) => { setSuccessMsg(msg); setTimeout(() => setSuccessMsg(null), 4000); }}
+          onNotifyError={(msg) => { setErrorMsg(msg); setTimeout(() => setErrorMsg(null), 4000); }}
+        />
       )}
       {/* Prompt Modal for adding categories, scopes, and sub-services */}
       <PromptModal

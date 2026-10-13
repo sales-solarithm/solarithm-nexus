@@ -46,7 +46,7 @@ export default function InactivityToast({
           <div className="flex items-center gap-1.5 text-sm font-bold text-white tracking-wide">
             <span>Session Timeout</span>
             <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-300 border border-amber-500/30 uppercase">
-              10 Min Inactive
+              15 Min Inactive
             </span>
           </div>
           <p className="text-xs text-gray-300 mt-1 leading-relaxed">

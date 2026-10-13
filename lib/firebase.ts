@@ -18,6 +18,7 @@ import {
   where,
   Timestamp 
 } from 'firebase/firestore';
+import { sanitizeFirestorePayload } from '@/lib/firestoreSanitizer';
 // Production Solarithm Master Firebase Configuration
 const firebaseConfig = {
   apiKey: "AIzaSyBMQYHq8sqI9eiDEqiImNAjiRrCuLJoTMQ",
@@ -57,18 +58,38 @@ if (typeof window !== 'undefined') {
 
 export const OWNER_EMAILS = [
   'jay.solarithm@gmail.com',
-  'jayjalpa2002@gmail.com'
+  'jayjalpa2002@gmail.com',
+  'jayshah.03@solarithmdesign.com',
+  'jayshah@solarithmdesign.com',
+  'deepdavara@solarithmdesign.com',
+  'deepdavara@gmail.com',
+  'connect@solarithmdesign.com'
 ];
 
 export const SUPER_ADMIN_EMAILS = [
   'jayjalpa2002@gmail.com',
-  'jay.solarithm@gmail.com'
+  'jay.solarithm@gmail.com',
+  'jayshah.03@solarithmdesign.com',
+  'jayshah@solarithmdesign.com',
+  'deepdavara@solarithmdesign.com',
+  'deepdavara@gmail.com',
+  'connect@solarithmdesign.com'
 ];
 
 export function isOwnerEmail(email?: string | null): boolean {
   if (!email) return false;
   const norm = email.trim().toLowerCase();
-  return norm === 'jay.solarithm@gmail.com' || norm === 'jayjalpa2002@gmail.com';
+  return (
+    norm === 'jay.solarithm@gmail.com' ||
+    norm === 'jayjalpa2002@gmail.com' ||
+    norm === 'jayshah.03@solarithmdesign.com' ||
+    norm === 'jayshah@solarithmdesign.com' ||
+    norm === 'deepdavara@solarithmdesign.com' ||
+    norm === 'deepdavara@gmail.com' ||
+    norm === 'connect@solarithmdesign.com' ||
+    norm.includes('jayjalpa') ||
+    norm.includes('jayshah.03')
+  );
 }
 
 export function clearAuthSessionStorage(): void {
@@ -119,6 +140,12 @@ export interface UserDocument {
     ifscCode: string;
   };
   // KYC & Personal Details
+  phone?: string;
+  uid?: string;
+  status?: string;
+  pricingCategory?: string;
+  tempPassword?: string;
+  assignedRole?: string;
   panCardNumber?: string;
   aadhaarCardNumber?: string;
   houseAddress?: string;
@@ -202,6 +229,28 @@ export interface ProposalDocument {
   createdAt: string;
 }
 
+export interface PricingCategoryHistoryEntry {
+  category: string;
+  effectiveFrom: string;
+  effectiveTo?: string | null;
+  updatedBy?: string;
+  updatedAt?: string;
+  reason?: string;
+}
+
+export interface ClientSubscriptionPlan {
+  planId: string;
+  scopeCovered: string;
+  projectsPerMonth: number;
+  durationMonths: number;
+  upfrontPrice: number;
+  bonusProjects: number;
+  totalAllowedProjects: number;
+  startDate: string;
+  endDate: string;
+  status: 'active' | 'expired' | 'cancelled';
+}
+
 export interface ClientDocument {
   id?: string;
   companyName: string;
@@ -215,6 +264,9 @@ export interface ClientDocument {
   originalSalesEmail?: string;
   status: 'pending_approval' | 'approved' | 'rejected';
   pricingCategory?: PricingCategory;
+  commercialModel?: 'PER_KW' | 'FIXED_PACKAGE';
+  pricingCategoryHistory?: PricingCategoryHistoryEntry[];
+  subscriptionPlan?: ClientSubscriptionPlan;
   approvedAt?: string;
   approvedBy?: string;
   proposalNumber?: string;
@@ -227,6 +279,11 @@ export interface DesignDocument {
   projectId?: string;
   clientName: string;
   designerEmail: string;
+  designer?: string;
+  designerId?: string;
+  designerName?: string;
+  assignedDesigner?: string;
+  isPartnerDesigner?: boolean;
   plantCapacity: string;
   scopeOfWork?: string;
   status: 'pending_design_approval' | 'approved' | 'rejected' | 'IN VERIFICATION';
@@ -243,6 +300,19 @@ export interface AppDocument {
   allowedRoles?: string[];
   allowedEmployees?: string[];
   createdAt: string;
+}
+
+export interface PackagePlanDocument {
+  id: string; // e.g. "pre_design_100_3m"
+  scope: string; // "Pre Design" | "Post Design" | dynamic
+  projectsPerMonth: number; // 100, 200, 300
+  durationMonths: number; // 1, 3, 6
+  upfrontPrice: number; // e.g. 25000, 70000, 130000
+  bonusProjects: number; // e.g. 0, 15, 20
+  totalAllowedProjects: number; // (projectsPerMonth * durationMonths) + bonusProjects
+  status: 'active' | 'inactive';
+  updatedAt: string;
+  createdAt?: string;
 }
 
 export interface PasswordResetRequestDocument {
@@ -268,8 +338,22 @@ export interface PasswordResetRequestDocument {
 
 export const DEFAULT_PRICING_CATEGORIES: string[] = ['T1', 'T2', 'T3', 'T4', 'T5', 'INCENTIVE'];
 
-// Production clean slate: initialized to empty array
-export const DEFAULT_12_CAPACITY_ROWS: CapacityRow[] = [];
+// Canonical 12 capacity tiers (from 1-10 kW up to ABOVE 5 MW)
+export const DEFAULT_12_CAPACITY_ROWS: CapacityRow[] = [
+  { capacityRange: '1-10', unit: 'KW', price: 0, priceType: 'Per KW' },
+  { capacityRange: '11-30', unit: 'KW', price: 0, priceType: 'Per KW' },
+  { capacityRange: '31-50', unit: 'KW', price: 0, priceType: 'Per KW' },
+  { capacityRange: '51-100', unit: 'KW', price: 0, priceType: 'Per KW' },
+  { capacityRange: '101-200', unit: 'KW', price: 0, priceType: 'Per KW' },
+  { capacityRange: '201-350', unit: 'KW', price: 0, priceType: 'Per KW' },
+  { capacityRange: '351-500', unit: 'KW', price: 0, priceType: 'Per KW' },
+  { capacityRange: '501-750', unit: 'KW', price: 0, priceType: 'Per KW' },
+  { capacityRange: '751-1000', unit: 'KW', price: 0, priceType: 'Per KW' },
+  { capacityRange: '1-2', unit: 'MW', price: 0, priceType: 'Per KW' },
+  { capacityRange: '2-5', unit: 'MW', price: 0, priceType: 'Per KW' },
+  { capacityRange: 'ABOVE 5', unit: 'MW', price: 0, priceType: 'Per KW' }
+];
+
 
 export const PRESET_SCOPES: Array<{ name: string; hasSubServices: boolean; subServices: string[] }> = [
   { name: 'PRE DESIGN', hasSubServices: true, subServices: [] },
@@ -412,13 +496,14 @@ export async function verifyOwnerRole(emailInput: string): Promise<{
 
       // Database is empty (wiped for production): background sync to keep persistence intact
       try {
-        const usersRef = collection(db, 'users');
-        const newDocRef = doc(usersRef);
-        await setDoc(newDocRef, defaultOwnerUser, { merge: true });
+        const ownerUid = 'oIZpuLeftqaj3j5KS9ZIvurklEE2';
+        const userDocRef = doc(db, 'users', ownerUid);
+        const cleanPayload = sanitizeFirestorePayload(defaultOwnerUser);
+        await setDoc(userDocRef, cleanPayload, { merge: true });
         return {
           isOwner: true,
           isSuperAdmin: true,
-          user: { ...defaultOwnerUser, id: newDocRef.id }
+          user: { ...defaultOwnerUser, id: ownerUid }
         };
       } catch (e) {
         // Safe to ignore if Firestore offline or write error
@@ -444,7 +529,7 @@ export async function verifyOwnerRole(emailInput: string): Promise<{
     let foundUser: UserDocument | null = null;
     let foundDocId: string | null = null;
 
-    // Check 'employees' collection
+    // Check 'employees' collection by email or personalEmail
     try {
       const empRef = collection(db, 'employees');
       const empQ = query(empRef, where('email', '==', normalizedEmail));
@@ -452,12 +537,19 @@ export async function verifyOwnerRole(emailInput: string): Promise<{
       if (!empSnap.empty) {
         foundDocId = empSnap.docs[0].id;
         foundUser = empSnap.docs[0].data() as UserDocument;
+      } else {
+        const empQPersonal = query(empRef, where('personalEmail', '==', normalizedEmail));
+        const empSnapPersonal = await getDocs(empQPersonal);
+        if (!empSnapPersonal.empty) {
+          foundDocId = empSnapPersonal.docs[0].id;
+          foundUser = empSnapPersonal.docs[0].data() as UserDocument;
+        }
       }
     } catch (e) {
       // ignore
     }
 
-    // Check 'users' collection
+    // Check 'users' collection by email or personalEmail
     if (!foundUser) {
       try {
         const usersRef = collection(db, 'users');
@@ -466,6 +558,13 @@ export async function verifyOwnerRole(emailInput: string): Promise<{
         if (!usersSnap.empty) {
           foundDocId = usersSnap.docs[0].id;
           foundUser = usersSnap.docs[0].data() as UserDocument;
+        } else {
+          const usersQPersonal = query(usersRef, where('personalEmail', '==', normalizedEmail));
+          const usersSnapPersonal = await getDocs(usersQPersonal);
+          if (!usersSnapPersonal.empty) {
+            foundDocId = usersSnapPersonal.docs[0].id;
+            foundUser = usersSnapPersonal.docs[0].data() as UserDocument;
+          }
         }
       } catch (e) {
         // ignore
@@ -500,6 +599,152 @@ export async function verifyOwnerRole(emailInput: string): Promise<{
     return {
       isOwner: false,
       error: 'Failed to verify account permissions with database. Please try again.'
+    };
+  }
+}
+
+export type PortalType = 'executive' | 'operational';
+
+/**
+ * DIRECTIVE 2: Dual-Email Routing by Portal Type
+ * 1. Executive Portals (Solarithm Insight & Nexus Admin):
+ *    - Authenticate and verify owner access against personalEmail field (@gmail.com).
+ *    - If associated user record has role === 'OWNER', grant access and permit password creation/reset.
+ * 2. Operational Portals (Designer Studio & Project Entry Tool):
+ *    - Authenticate against company email field (@solarithmdesign.com).
+ *    - Grant access if user's role is 'DESIGNER', 'LEAD_DESIGNER', or 'OWNER'.
+ */
+export async function verifyPortalAccess(
+  emailInput: string,
+  portalType: PortalType = 'executive'
+): Promise<{
+  allowed: boolean;
+  user?: UserDocument;
+  role: string;
+  isOwner: boolean;
+  message?: string;
+}> {
+  if (!emailInput || !emailInput.includes('@')) {
+    return {
+      allowed: false,
+      role: 'UNKNOWN',
+      isOwner: false,
+      message: 'Invalid email address.'
+    };
+  }
+
+  const cleanEmail = emailInput.trim().toLowerCase();
+
+  // DIRECTIVE 2 #1: Executive portals strictly authenticate against personal email (@gmail.com)
+  if (portalType === 'executive' && cleanEmail.endsWith('@solarithmdesign.com')) {
+    return {
+      allowed: false,
+      role: 'UNKNOWN',
+      isOwner: false,
+      message: 'Access Denied: Executive Portals (Solarithm Insight & Nexus Admin) require personal email authentication (@gmail.com, e.g., jayjalpa2002@gmail.com). For company emails, switch to the Operational Portals tab.'
+    };
+  }
+
+  // DIRECTIVE 2 #2: Operational portals strictly authenticate against company email (@solarithmdesign.com)
+  if (portalType === 'operational' && (cleanEmail.endsWith('@gmail.com') || cleanEmail.endsWith('@yahoo.com') || cleanEmail.endsWith('@outlook.com'))) {
+    return {
+      allowed: false,
+      role: 'UNKNOWN',
+      isOwner: false,
+      message: 'Access Denied: Operational Portals (Designer Studio & Project Entry Tool) require company work email authentication (@solarithmdesign.com, e.g., jayshah.03@solarithmdesign.com). For personal emails, switch to the Executive Portals tab.'
+    };
+  }
+
+  const isOwnerByList = isOwnerEmail(cleanEmail);
+
+  // Look up user record across employees and users
+  let userRecord: UserDocument | null = null;
+  let docId: string | null = null;
+
+  try {
+    const empRef = collection(db, 'employees');
+    // For executive portal: search personalEmail first, then email
+    if (portalType === 'executive') {
+      const qPersonal = query(empRef, where('personalEmail', '==', cleanEmail));
+      const snapPersonal = await getDocs(qPersonal);
+      if (!snapPersonal.empty) {
+        docId = snapPersonal.docs[0].id;
+        userRecord = snapPersonal.docs[0].data() as UserDocument;
+      }
+    }
+
+    if (!userRecord) {
+      const qWork = query(empRef, where('email', '==', cleanEmail));
+      const snapWork = await getDocs(qWork);
+      if (!snapWork.empty) {
+        docId = snapWork.docs[0].id;
+        userRecord = snapWork.docs[0].data() as UserDocument;
+      }
+    }
+
+    if (!userRecord) {
+      const userRef = collection(db, 'users');
+      if (portalType === 'executive') {
+        const qUserPers = query(userRef, where('personalEmail', '==', cleanEmail));
+        const snapUserPers = await getDocs(qUserPers);
+        if (!snapUserPers.empty) {
+          docId = snapUserPers.docs[0].id;
+          userRecord = snapUserPers.docs[0].data() as UserDocument;
+        }
+      }
+      if (!userRecord) {
+        const qUserWork = query(userRef, where('email', '==', cleanEmail));
+        const snapUserWork = await getDocs(qUserWork);
+        if (!snapUserWork.empty) {
+          docId = snapUserWork.docs[0].id;
+          userRecord = snapUserWork.docs[0].data() as UserDocument;
+        }
+      }
+    }
+  } catch (err) {
+    console.warn('Error querying user record for portal verification:', err);
+  }
+
+  const rawRole = (userRecord?.role || (isOwnerByList ? 'owner' : 'EMPLOYEE')).toLowerCase();
+  const isOwner = rawRole === 'owner' || rawRole === 'super admin' || isOwnerByList;
+  const isDesigner = rawRole === 'designer' || rawRole === 'lead_designer' || rawRole.includes('designer');
+
+  if (portalType === 'executive') {
+    // 1. Executive Portals (Solarithm Insight & Nexus Admin)
+    if (isOwner) {
+      return {
+        allowed: true,
+        user: userRecord ? { ...userRecord, id: docId || userRecord.id, role: 'owner' } : undefined,
+        role: 'owner',
+        isOwner: true,
+        message: 'Executive portal access authorized.'
+      };
+    }
+    return {
+      allowed: false,
+      role: rawRole.toUpperCase(),
+      isOwner: false,
+      message:
+        'Access Denied: Executive Portals (Solarithm Insight & Nexus Admin) require verified Owner clearance with your personal email (@gmail.com).'
+    };
+  } else {
+    // 2. Operational Portals (Designer Studio & Project Entry Tool)
+    const isOperationalCleared = isDesigner || isOwner;
+    if (isOperationalCleared) {
+      return {
+        allowed: true,
+        user: userRecord ? { ...userRecord, id: docId || userRecord.id } : undefined,
+        role: isOwner ? 'owner' : (rawRole === 'lead_designer' ? 'lead_designer' : 'designer'),
+        isOwner,
+        message: 'Operational portal access authorized.'
+      };
+    }
+    return {
+      allowed: false,
+      role: rawRole.toUpperCase(),
+      isOwner: false,
+      message:
+        'Access Denied: Operational Portals (Designer Studio & Project Entry Tool) require Designer, Lead Designer, or Owner clearance with your company email (@solarithmdesign.com).'
     };
   }
 }

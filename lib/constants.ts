@@ -5,10 +5,26 @@ export const COLLECTIONS = {
   APPS: 'apps',
   SCOPES: 'scopes',
   PRICING_RULES: 'pricingRules',
+  COMMISSION_RULES: 'commissionRules',
+  PACKAGE_PLANS: 'packagePlans',
   PROPOSALS: 'proposals',
   PRICING_CATEGORIES: 'pricingCategories', // Adding this as it's used
   USER_ACCESS: 'userAccess', // Adding this as it's used
 } as const;
+
+export interface PackagePlanDocument {
+  id: string; // e.g. "pre_design_100_3m"
+  scope: string; // "Pre Design" | "Post Design" | dynamic
+  projectsPerMonth: number; // 100, 200, 300
+  durationMonths: number; // 1, 3, 6
+  upfrontPrice: number; // e.g. 25000, 70000, 130000
+  bonusProjects: number; // e.g. 0, 15, 20
+  totalAllowedProjects: number; // (projectsPerMonth * durationMonths) + bonusProjects
+  status: 'active' | 'inactive';
+  updatedAt: string;
+  createdAt?: string;
+}
+
 
 export const STATUS = {
   // Client Statuses (MUST BE LOWERCASE)

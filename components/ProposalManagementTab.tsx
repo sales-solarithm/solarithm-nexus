@@ -107,7 +107,7 @@ export default function ProposalManagementTab({ currentEmail, currentRole }: Pro
         updateCombined();
       },
       (err) => {
-        console.error('Error in pricingRules snapshot for categories:', err);
+        console.warn('Snapshot listener caught:', err);
         setLoadingCategories(false);
       }
     );
@@ -128,7 +128,7 @@ export default function ProposalManagementTab({ currentEmail, currentRole }: Pro
         updateCombined();
       },
       (err) => {
-        console.error('Error in pricingCategories snapshot:', err);
+        console.warn('Snapshot listener caught:', err);
         setLoadingCategories(false);
       }
     );
