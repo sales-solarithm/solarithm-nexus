@@ -720,9 +720,17 @@ export function deduplicateEmployeeList(rawList: UserDocument[]): {
       const isDocItemNewer = docTime > matchedTime;
 
       // Select primary document ID:
-      // If docItem has a canonical Auth UID and matched does not, swap IDs so the Auth UID remains primary
       if (docItem.id && matched.id && docItem.id !== matched.id) {
-        if (isProbableAuthUid(docItem.id) && !isProbableAuthUid(matched.id)) {
+        const isDocCanonical = docItem.id.startsWith('SDM-') || docItem.id.startsWith('SOL-');
+        const isMatchedCanonical = matched.id.startsWith('SDM-') || matched.id.startsWith('SOL-');
+
+        if (isDocCanonical && !isMatchedCanonical) {
+          duplicateDocIdsToPurge.add(matched.id);
+          matched.id = docItem.id;
+          matched.uid = docItem.uid || docItem.id;
+        } else if (isMatchedCanonical && !isDocCanonical) {
+          duplicateDocIdsToPurge.add(docItem.id);
+        } else if (isProbableAuthUid(docItem.id) && !isProbableAuthUid(matched.id)) {
           duplicateDocIdsToPurge.add(matched.id);
           matched.id = docItem.id;
           matched.uid = docItem.id;
@@ -731,13 +739,20 @@ export function deduplicateEmployeeList(rawList: UserDocument[]): {
         }
       }
 
-      // 1. Role merging: prefer non-generic role over 'EMPLOYEE', and prefer latest specific role
+      // Precedence: Authoritative KYC record (/employees) or newer updatedAt takes precedence
+      const isDocFromEmployees = Boolean((docItem as any)._isEmployeeDoc || (docItem.id && (docItem.id.startsWith('SDM-') || docItem.id.startsWith('SOL-'))));
+      const isMatchedFromEmployees = Boolean((matched as any)._isEmployeeDoc || (matched.id && (matched.id.startsWith('SDM-') || matched.id.startsWith('SOL-'))));
+      const docTakesPrecedence = (isDocFromEmployees && !isMatchedFromEmployees) || isDocItemNewer || (!isMatchedFromEmployees && docTime >= matchedTime);
+
+      // 1. Role merging: prefer non-generic role over 'EMPLOYEE', and prefer authoritative role
       const normMatchedRole = normalizeRole(matched.role);
       const normDocRole = normalizeRole(docItem.role);
       const isDocSpecific = normDocRole && normDocRole !== 'EMPLOYEE';
       const isMatchedSpecific = normMatchedRole && normMatchedRole !== 'EMPLOYEE';
 
-      if (isDocSpecific && !isMatchedSpecific) {
+      if (docTakesPrecedence && isDocSpecific) {
+        matched.role = normDocRole;
+      } else if (isDocSpecific && !isMatchedSpecific) {
         matched.role = normDocRole;
       } else if (!isDocSpecific && isMatchedSpecific) {
         matched.role = normMatchedRole;
@@ -749,7 +764,7 @@ export function deduplicateEmployeeList(rawList: UserDocument[]): {
         matched.role = normMatchedRole;
       } else if (normMatchedRole === 'LEAD_SALES' && normDocRole === 'SALES') {
         matched.role = normMatchedRole;
-      } else if (isDocItemNewer && normDocRole) {
+      } else if (docTakesPrecedence && normDocRole) {
         matched.role = normDocRole;
       } else if (normMatchedRole) {
         matched.role = normMatchedRole;
@@ -757,53 +772,57 @@ export function deduplicateEmployeeList(rawList: UserDocument[]): {
         matched.role = 'EMPLOYEE';
       }
 
-      // 2. Employee ID canonicalization: prefer letter 'O' (SOL-SO-006) over digit '0' (SOL-S0-006)
-      if (docItem.employeeId && matched.employeeId) {
-        if (docItem.employeeId.includes('-SO-') && matched.employeeId.includes('-S0-')) {
-          matched.employeeId = docItem.employeeId;
-        } else if (matched.employeeId.includes('-SO-') && docItem.employeeId.includes('-S0-')) {
-          // Keep matched.employeeId
-        } else if (isDocItemNewer && docItem.employeeId) {
-          matched.employeeId = docItem.employeeId;
+      // 2. Employee ID canonicalization: prefer permanent partner IDs (SDM-DD-002, SDM-JS-001) or letter 'O'
+      if (docItem.employeeId || (docItem as any).empId) {
+        const docEmpId = docItem.employeeId || (docItem as any).empId;
+        if (docEmpId.startsWith('SDM-') || !matched.employeeId) {
+          matched.employeeId = docEmpId;
+          (matched as any).empId = docEmpId;
         }
-      } else {
-        matched.employeeId = matched.employeeId || docItem.employeeId;
       }
       if (matched.employeeId && matched.employeeId.includes('-S0-')) {
         matched.employeeId = matched.employeeId.replace('-S0-', '-SO-');
+        (matched as any).empId = matched.employeeId;
       }
 
-      // 3. Dual email resolution:
-      // Store corporate @solarithmdesign.com in `email` (for official authentication and routing)
-      // Store personal email in `personalEmail` (and mirror in personalEmailAddress)
-      const { workEmail, personalEmail } = resolveDualEmails([
-        matched.email,
-        matched.personalEmail,
-        matched.personalEmailAddress,
-        docItem.email,
-        docItem.personalEmail,
-        docItem.personalEmailAddress
-      ]);
+      // 3. Email resolution: Newly updated / authoritative KYC email MUST take precedence
+      if (docTakesPrecedence) {
+        if (docItem.email) {
+          matched.email = normalizeEmail(docItem.email);
+        }
+        if ((docItem as any).officialEmail) {
+          (matched as any).officialEmail = normalizeEmail((docItem as any).officialEmail);
+        }
+        const pers = docItem.personalEmail || docItem.personalEmailAddress;
+        if (pers) {
+          matched.personalEmail = normalizeEmail(pers);
+          matched.personalEmailAddress = matched.personalEmail;
+        }
+      } else {
+        if (!matched.email && docItem.email) {
+          matched.email = normalizeEmail(docItem.email);
+        }
+        if (!matched.personalEmail && (docItem.personalEmail || docItem.personalEmailAddress)) {
+          matched.personalEmail = normalizeEmail(docItem.personalEmail || docItem.personalEmailAddress);
+          matched.personalEmailAddress = matched.personalEmail;
+        }
+      }
 
-      if (workEmail) matched.email = workEmail;
-      matched.personalEmail = personalEmail;
-      matched.personalEmailAddress = personalEmail;
-
-      // 4. Person Name resolution: prefer fuller legal name or latest details
+      // 4. Person Name resolution: prefer authoritative or fuller legal name
       const nameDocTokens = (docItem.name || '').trim().split(/\s+/).filter(Boolean);
       const nameMatchedTokens = (matched.name || '').trim().split(/\s+/).filter(Boolean);
-      if (nameDocTokens.length > nameMatchedTokens.length && !isGenericPlaceholderName(docItem.name)) {
+      if (docTakesPrecedence && docItem.name && !isGenericPlaceholderName(docItem.name)) {
+        matched.name = docItem.name;
+      } else if (nameDocTokens.length > nameMatchedTokens.length && !isGenericPlaceholderName(docItem.name)) {
         matched.name = docItem.name;
       } else if (nameMatchedTokens.length > nameDocTokens.length && !isGenericPlaceholderName(matched.name)) {
         // Keep matched fuller name
-      } else if (isDocItemNewer && docItem.name && !isGenericPlaceholderName(docItem.name)) {
-        matched.name = docItem.name;
       } else {
         matched.name = matched.name || docItem.name;
       }
 
-      // 5. Preserving latest details for all professional and KYC attributes:
-      if (isDocItemNewer) {
+      // 5. Professional and KYC attributes: authoritative record takes precedence
+      if (docTakesPrecedence) {
         matched.department = docItem.department || matched.department;
         matched.designation = docItem.designation || matched.designation;
         matched.basicPay = (docItem.basicPay !== undefined && docItem.basicPay !== null && docItem.basicPay > 0)
@@ -816,12 +835,14 @@ export function deduplicateEmployeeList(rawList: UserDocument[]): {
         matched.bankName = docItem.bankName || docItem.bankDetails?.bankName || matched.bankName;
         matched.accountNumber = docItem.accountNumber || docItem.bankDetails?.accountNumber || matched.accountNumber;
         matched.ifscCode = docItem.ifscCode || docItem.bankDetails?.ifscCode || matched.ifscCode;
+        matched.bankDetails = docItem.bankDetails || matched.bankDetails;
         matched.panCardNumber = docItem.panCardNumber || docItem.panNumber || matched.panCardNumber;
         matched.panNumber = matched.panCardNumber;
         matched.aadhaarCardNumber = docItem.aadhaarCardNumber || docItem.aadhaarNumber || matched.aadhaarCardNumber;
         matched.aadhaarNumber = matched.aadhaarCardNumber;
         matched.houseAddress = docItem.houseAddress || matched.houseAddress;
         matched.phone = docItem.phone || matched.phone;
+        matched.updatedAt = docItem.updatedAt || matched.updatedAt;
       } else {
         matched.department = matched.department || docItem.department;
         matched.designation = matched.designation || docItem.designation;
@@ -897,13 +918,13 @@ export function deduplicateEmployeeList(rawList: UserDocument[]): {
         continue;
       }
       partnerKeysSeen.add('JAY_SHAH');
-      emp.name = 'Jay Shah';
+      emp.name = emp.name || 'Jay Shah';
       emp.employeeId = 'SDM-JS-001';
-      emp.email = 'jayshah.03@solarithmdesign.com';
-      emp.personalEmail = 'jayjalpa2002@gmail.com';
-      emp.personalEmailAddress = 'jayjalpa2002@gmail.com';
+      emp.email = (emp.email || (emp as any).officialEmail || 'jayshah.03@solarithmdesign.com').trim().toLowerCase();
+      emp.personalEmail = (emp.personalEmail || emp.personalEmailAddress || 'jayjalpa2002@gmail.com').trim().toLowerCase();
+      emp.personalEmailAddress = (emp.personalEmailAddress || emp.personalEmail || 'jayjalpa2002@gmail.com').trim().toLowerCase();
       emp.role = 'OWNER';
-      emp.designation = 'Company Partner & Lead Solar Designer';
+      emp.designation = emp.designation || 'Company Partner & Lead Solar Designer';
       emp.department = 'Executive Management';
       emp.id = emp.id || 'oIZpuLeftqaj3j5KS9ZIvurklEE2';
       emp.uid = emp.uid || 'oIZpuLeftqaj3j5KS9ZIvurklEE2';
@@ -913,13 +934,13 @@ export function deduplicateEmployeeList(rawList: UserDocument[]): {
         continue;
       }
       partnerKeysSeen.add('DEEP_DAVARA');
-      emp.name = 'Deep Davara';
+      emp.name = emp.name || 'Deep Davara';
       emp.employeeId = 'SDM-DD-002';
-      emp.email = 'deepdavara@solarithmdesign.com';
-      emp.personalEmail = 'deepdavara@gmail.com';
-      emp.personalEmailAddress = 'deepdavara@gmail.com';
+      emp.email = (emp.email || (emp as any).officialEmail || 'deepdavara.23@solarithmdesign.com').trim().toLowerCase();
+      emp.personalEmail = (emp.personalEmail || emp.personalEmailAddress || 'deepdavara@gmail.com').trim().toLowerCase();
+      emp.personalEmailAddress = (emp.personalEmailAddress || emp.personalEmail || 'deepdavara@gmail.com').trim().toLowerCase();
       emp.role = 'OWNER';
-      emp.designation = 'Company Partner & Senior Solar Designer';
+      emp.designation = emp.designation || 'Company Partner & Senior Solar Designer';
       emp.department = 'Executive Management';
     }
 
@@ -1350,6 +1371,27 @@ export async function executeDeduplicationSweep(): Promise<DeduplicationSweepRes
 
   const totalScanned = rawList.length;
   const { dedupedList, duplicateDocIdsToPurge } = deduplicateEmployeeList(rawList);
+  const masterIds = new Set(dedupedList.map(u => u.id));
+
+  // Detect and flag any unlinked orphaned documents in /users or /employees
+  for (const d of rawList) {
+    if (d.id && !masterIds.has(d.id)) {
+      const isKnown = dedupedList.some(emp => 
+        emp.id === d.id ||
+        emp.uid === d.id ||
+        (emp.employeeId && (emp.employeeId.toUpperCase() === (d.employeeId || '').toUpperCase())) ||
+        (emp.email && emp.email.toLowerCase() === (d.email || '').toLowerCase()) ||
+        (emp.personalEmail && emp.personalEmail.toLowerCase() === (d.email || '').toLowerCase())
+      );
+      if (!isKnown && (d.email || '').includes('@')) {
+        // If not a recognized super admin owner bypass, purge orphaned ghost doc
+        const isSuper = (d.email && (d.email.includes('jayjalpa') || d.email.includes('jay.solarithm')));
+        if (!isSuper) {
+          duplicateDocIdsToPurge.add(d.id);
+        }
+      }
+    }
+  }
 
   // Normalize roles and update merged primary documents in Firestore
   const updatePromises: Promise<any>[] = [];
@@ -1386,7 +1428,6 @@ export async function executeDeduplicationSweep(): Promise<DeduplicationSweepRes
 
   // Purge orphaned duplicate documents from Firestore
   let purgedCount = 0;
-  const masterIds = new Set(dedupedList.map(u => u.id));
   const deletePromises: Promise<any>[] = [];
   for (const dupId of duplicateDocIdsToPurge) {
     if (!masterIds.has(dupId)) {

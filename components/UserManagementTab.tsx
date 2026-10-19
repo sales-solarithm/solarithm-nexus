@@ -61,7 +61,8 @@ import {
   provisionUserRecord, 
   updateUserRecord, 
   safeStringIdentifier, 
-  normalizeRole 
+  normalizeRole,
+  syncEmployeesAndUsers
 } from '@/lib/userService';
 import {
   safeSetDoc,
@@ -288,6 +289,7 @@ export default function UserManagementTab({ currentEmail, currentRole }: UserMan
   // Add/Edit Employee Modal State
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [editingUserId, setEditingUserId] = useState<string | null>(null);
+  const [editingOriginalUser, setEditingOriginalUser] = useState<UserDocument | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
 
@@ -308,6 +310,7 @@ export default function UserManagementTab({ currentEmail, currentRole }: UserMan
     panCardNumber: string;
     aadhaarCardNumber: string;
     houseAddress: string;
+    personalEmail: string;
     personalEmailAddress: string;
     phone?: string;
   }>({
@@ -326,6 +329,7 @@ export default function UserManagementTab({ currentEmail, currentRole }: UserMan
     panCardNumber: '',
     aadhaarCardNumber: '',
     houseAddress: '',
+    personalEmail: '',
     personalEmailAddress: '',
     phone: ''
   });
@@ -376,38 +380,49 @@ export default function UserManagementTab({ currentEmail, currentRole }: UserMan
         getDocs(collection(db, COLLECTIONS.USERS)),
         getDocs(collection(db, COLLECTIONS.EMPLOYEES || 'employees')).catch(() => ({ forEach: () => {} } as any))
       ]);
-      const rawList: UserDocument[] = [];
+      const userList: UserDocument[] = [];
+      const empList: UserDocument[] = [];
       userSnap.forEach((docSnap) => {
-        rawList.push({ ...(docSnap.data() as UserDocument), id: docSnap.id });
+        userList.push({ ...(docSnap.data() as UserDocument), id: docSnap.id });
       });
       empSnap.forEach((docSnap: any) => {
-        rawList.push({ ...(docSnap.data() as UserDocument), id: docSnap.id });
+        empList.push({ ...(docSnap.data() as UserDocument), id: docSnap.id });
       });
 
-      const { dedupedList, duplicateDocIdsToPurge } = deduplicateEmployeeList(rawList);
-      dedupedList.forEach((u) => {
-        if (u.role) u.role = normalizeRole(u.role);
-      });
-      dedupedList.sort((a, b) => {
-        if (a.employeeId && b.employeeId) {
-          return a.employeeId.localeCompare(b.employeeId);
-        }
-        return (a.name || '').localeCompare(b.name || '');
-      });
+      const { mergedEmployees, duplicateDocIdsToPurge } = syncEmployeesAndUsers(userList, empList);
 
-      setUsers(dedupedList);
-      setCachedEmployees(dedupedList);
+      setUsers(mergedEmployees);
+      setCachedEmployees(mergedEmployees);
 
       // Background purge of stale duplicate documents and persistence of merged primary records in Firestore
       if (duplicateDocIdsToPurge && duplicateDocIdsToPurge.size > 0) {
-        const masterIds = new Set(dedupedList.map(u => u.id));
+        const masterIds = new Set(mergedEmployees.map(u => u.id));
         for (const dupId of duplicateDocIdsToPurge) {
           if (!masterIds.has(dupId)) {
             deleteDoc(doc(db, COLLECTIONS.USERS, dupId)).catch(() => {});
             deleteDoc(doc(db, COLLECTIONS.EMPLOYEES || 'employees', dupId)).catch(() => {});
           }
         }
-        for (const emp of dedupedList) {
+        const allRaw = [...userList, ...empList];
+        for (const d of allRaw) {
+          if (d.id && !masterIds.has(d.id)) {
+            const isKnown = mergedEmployees.some(emp => 
+              emp.id === d.id ||
+              emp.uid === d.id ||
+              (emp.employeeId && (emp.employeeId.toUpperCase() === (d.employeeId || '').toUpperCase())) ||
+              (emp.email && emp.email.toLowerCase() === (d.email || '').toLowerCase()) ||
+              (emp.personalEmail && emp.personalEmail.toLowerCase() === (d.email || '').toLowerCase())
+            );
+            if (!isKnown && (d.email || '').includes('@')) {
+              const isSuper = (d.email && (d.email.includes('jayjalpa') || d.email.includes('jay.solarithm')));
+              if (!isSuper) {
+                deleteDoc(doc(db, COLLECTIONS.USERS, d.id)).catch(() => {});
+                deleteDoc(doc(db, COLLECTIONS.EMPLOYEES || 'employees', d.id)).catch(() => {});
+              }
+            }
+          }
+        }
+        for (const emp of mergedEmployees) {
           try {
             const targetUid = emp.uid || emp.id;
             const canonicalEmpId = (emp.employeeId || targetUid || '').toUpperCase();
@@ -437,7 +452,7 @@ export default function UserManagementTab({ currentEmail, currentRole }: UserMan
       }
       try {
         if (typeof window !== 'undefined') {
-          localStorage.setItem('employees', JSON.stringify(dedupedList));
+          localStorage.setItem('employees', JSON.stringify(mergedEmployees));
         }
       } catch (e) {
         console.warn('Could not save employees to localStorage', e);
@@ -673,6 +688,7 @@ export default function UserManagementTab({ currentEmail, currentRole }: UserMan
 
   const openAddModal = () => {
     setEditingUserId(null);
+    setEditingOriginalUser(null);
     const firstDept = departmentsList.length > 0 ? departmentsList[0] : DEFAULT_FALLBACK_DEPARTMENTS[0];
     const initialDept = firstDept.name;
     const allowedRoles = getDeptRoles(firstDept);
@@ -694,6 +710,7 @@ export default function UserManagementTab({ currentEmail, currentRole }: UserMan
       panCardNumber: '',
       aadhaarCardNumber: '',
       houseAddress: '',
+      personalEmail: '',
       personalEmailAddress: '',
       phone: ''
     });
@@ -702,7 +719,8 @@ export default function UserManagementTab({ currentEmail, currentRole }: UserMan
   };
 
   const openEditModal = (user: UserDocument) => {
-    setEditingUserId(user.id || null);
+    setEditingUserId(user.id || user.uid || user.employeeId || null);
+    setEditingOriginalUser(user);
     const userDept = user.department || (departmentsList[0]?.name || 'Sales & Business Development');
     const targetDept = 
       departmentsList.find(d => (d.name || '').toLowerCase() === userDept.toLowerCase()) ||
@@ -713,10 +731,15 @@ export default function UserManagementTab({ currentEmail, currentRole }: UserMan
     const dojNorm = normalizeDateToYMD(user.dateOfJoining || user.doj || '');
     const dobNorm = normalizeDateToYMD(user.dateOfBirth || user.dob || '');
 
+    const isPartnerJay = (user.name || '').toLowerCase().includes('jay shah') || (user.email || '').includes('jayshah') || (user.personalEmail || '').includes('jayjalpa') || (user.personalEmailAddress || '').includes('jayjalpa') || (user.employeeId || '').includes('JS-001');
+    const isPartnerDeep = (user.name || '').toLowerCase().includes('deep davara') || (user.email || '').includes('deepdavara') || (user.personalEmail || '').includes('deepdavara') || (user.personalEmailAddress || '').includes('deepdavara') || (user.employeeId || '').includes('DD-002');
+    const resolvedEmpId = isPartnerJay ? 'SDM-JS-001' : (isPartnerDeep ? 'SDM-DD-002' : (user.employeeId || `SOL-EMP-${String(users.indexOf(user) + 1).padStart(2, '0')}`));
+    const persEmail = user.personalEmail || user.personalEmailAddress || '';
+
     setFormData({
-      employeeId: user.employeeId || `SOL-EMP-${String(users.indexOf(user) + 1).padStart(2, '0')}`,
+      employeeId: resolvedEmpId,
       name: user.name || '',
-      email: user.email || '',
+      email: user.email || (user as any).officialEmail || '',
       role: initialRole,
       department: userDept,
       designation: user.designation || '',
@@ -729,7 +752,8 @@ export default function UserManagementTab({ currentEmail, currentRole }: UserMan
       panCardNumber: safeStringIdentifier(user.panCardNumber || user.panNumber || '').toUpperCase(),
       aadhaarCardNumber: safeStringIdentifier(user.aadhaarCardNumber || user.aadhaarNumber || ''),
       houseAddress: user.houseAddress || '',
-      personalEmailAddress: user.personalEmailAddress || user.personalEmail || '',
+      personalEmail: persEmail,
+      personalEmailAddress: persEmail,
       phone: safeStringIdentifier((user as any).phone || '')
     });
     setFormError(null);
@@ -747,7 +771,7 @@ export default function UserManagementTab({ currentEmail, currentRole }: UserMan
     const panTrimmed = formData.panCardNumber.trim().toUpperCase();
     const aadhaarTrimmed = formData.aadhaarCardNumber.trim();
     const addressTrimmed = formData.houseAddress.trim();
-    const personalEmailTrimmed = formData.personalEmailAddress.trim().toLowerCase();
+    const personalEmailTrimmed = (formData.personalEmail || formData.personalEmailAddress || '').trim().toLowerCase();
 
     if (!nameTrimmed) {
       setFormError('Please enter the employee full name.');
@@ -776,23 +800,42 @@ export default function UserManagementTab({ currentEmail, currentRole }: UserMan
       return;
     }
 
-    // Validation: Unique Email Check
-    const emailExists = users.some(
-      (u) => (u.email || '').toLowerCase() === emailTrimmed && u.id !== editingUserId
-    );
+    const safeEmpId = safeStringIdentifier(empIdTrimmed).toUpperCase();
+    const originalEmail = (editingOriginalUser?.email || '').trim().toLowerCase();
+    const originalEmpId = (editingOriginalUser?.employeeId || '').trim().toUpperCase();
+
+    // Validation: Unique Email Check (skip current employee)
+    const emailExists = users.some((u) => {
+      const uEmail = (u.email || '').toLowerCase().trim();
+      const uPersonal = (u.personalEmail || u.personalEmailAddress || '').toLowerCase().trim();
+      const isSelf = 
+        (editingUserId && u.id === editingUserId) ||
+        (editingOriginalUser && (u.id === editingOriginalUser.id || (editingOriginalUser.uid && u.uid === editingOriginalUser.uid))) ||
+        (safeEmpId && (u.employeeId || '').toUpperCase() === safeEmpId) ||
+        (originalEmail && uEmail === originalEmail);
+      if (isSelf) return false;
+      return uEmail === emailTrimmed || (uPersonal && uPersonal === emailTrimmed);
+    });
 
     if (emailExists) {
-      setFormError(`Validation Error: The email "${emailTrimmed}" is already registered.`);
+      setFormError(`Validation Error: The email "${emailTrimmed}" is already registered to another employee.`);
       return;
     }
 
-    // Validation: Unique Employee ID Check
-    const empIdExists = users.some(
-      (u) => (u.employeeId || '').toUpperCase() === empIdTrimmed && u.id !== editingUserId
-    );
+    // Validation: Unique Employee ID Check (skip current employee)
+    const empIdExists = users.some((u) => {
+      const uEmpId = (u.employeeId || '').toUpperCase().trim();
+      const isSelf = 
+        (editingUserId && u.id === editingUserId) ||
+        (editingOriginalUser && (u.id === editingOriginalUser.id || (editingOriginalUser.uid && u.uid === editingOriginalUser.uid))) ||
+        (originalEmpId && uEmpId === originalEmpId) ||
+        (originalEmail && (u.email || '').toLowerCase().trim() === originalEmail);
+      if (isSelf) return false;
+      return uEmpId === safeEmpId;
+    });
 
     if (empIdExists) {
-      setFormError(`Validation Error: The Employee ID "${empIdTrimmed}" is already in use.`);
+      setFormError(`Validation Error: The Employee ID "${safeEmpId}" is already assigned to another employee.`);
       return;
     }
 
@@ -803,7 +846,6 @@ export default function UserManagementTab({ currentEmail, currentRole }: UserMan
       const safeBankName = formData.bankName.trim();
       const safePan = safeStringIdentifier(panTrimmed).toUpperCase();
       const safeAadhaar = safeStringIdentifier(aadhaarTrimmed);
-      const safeEmpId = safeStringIdentifier(empIdTrimmed).toUpperCase();
       const safePhone = safeStringIdentifier(formData.phone);
       const canonicalRole = normalizeRole(formData.role);
 
@@ -818,8 +860,10 @@ export default function UserManagementTab({ currentEmail, currentRole }: UserMan
 
       const employeePayload: Record<string, any> = {
         employeeId: safeEmpId,
+        empId: safeEmpId,
         name: nameTrimmed,
         email: emailTrimmed,
+        officialEmail: emailTrimmed,
         role: canonicalRole,
         department: formData.department.trim(),
         designation: formData.designation.trim(),
@@ -833,22 +877,46 @@ export default function UserManagementTab({ currentEmail, currentRole }: UserMan
         accountNumber: safeAcct,
         ifscCode: safeIfsc,
         bankDetails: bankDetailsObj,
-        // KYC & Personal Details (DAT-01: strictly string formatted)
         panCardNumber: safePan,
         panNumber: safePan,
         aadhaarCardNumber: safeAadhaar,
         aadhaarNumber: safeAadhaar,
         houseAddress: addressTrimmed,
-        personalEmailAddress: personalEmailTrimmed.toLowerCase(),
-        personalEmail: personalEmailTrimmed.toLowerCase(),
+        personalEmailAddress: personalEmailTrimmed,
+        personalEmail: personalEmailTrimmed,
         status: 'ACTIVE',
         updatedAt: new Date().toISOString()
       };
 
-      if (editingUserId) {
-        // Edit Existing User: atomic write to /users/{editingUserId} and /employees/{editingUserId}
-        const userRef = doc(db, COLLECTIONS.USERS, editingUserId);
-        const existingUser = users.find((u) => u.id === editingUserId);
+      if (editingUserId || editingOriginalUser) {
+        // Edit Existing User: Key strictly by canonical Auth UID or Employee ID
+        const existingUser = editingOriginalUser || users.find((u) => u.id === editingUserId || u.employeeId === safeEmpId);
+
+        const isPartnerJay = 
+          nameTrimmed.toLowerCase().includes('jay shah') || 
+          emailTrimmed.includes('jayshah') || 
+          personalEmailTrimmed.includes('jayjalpa') || 
+          safeEmpId.includes('JS-001');
+        const isPartnerDeep = 
+          nameTrimmed.toLowerCase().includes('deep davara') || 
+          emailTrimmed.includes('deepdavara') || 
+          personalEmailTrimmed.includes('deepdavara') || 
+          safeEmpId.includes('DD-002');
+
+        const canonicalEmpId = isPartnerJay 
+          ? 'SDM-JS-001' 
+          : (isPartnerDeep ? 'SDM-DD-002' : safeEmpId);
+
+        const isAuthUid = (id?: string | null) => Boolean(id && id.length >= 20 && !id.includes('@') && !id.includes('_') && !id.startsWith('SOL-') && !id.startsWith('SDM-'));
+        const candidateAuthUid = 
+          (existingUser?.uid && isAuthUid(existingUser.uid) ? existingUser.uid : null) ||
+          ((existingUser as any)?.authUid && isAuthUid((existingUser as any).authUid) ? (existingUser as any).authUid : null) ||
+          (existingUser?.id && isAuthUid(existingUser.id) ? existingUser.id : null);
+
+        const canonicalUserDocId = candidateAuthUid || canonicalEmpId;
+
+        const userRef = doc(db, COLLECTIONS.USERS, canonicalUserDocId);
+        const empDocRef = doc(db, COLLECTIONS.EMPLOYEES || 'employees', canonicalEmpId);
         
         const oldDep = String(existingUser?.department || existingUser?.role || (existingUser as any)?.assignedRole || '').toLowerCase().trim();
         const newDep = formData.department.toLowerCase();
@@ -857,38 +925,142 @@ export default function UserManagementTab({ currentEmail, currentRole }: UserMan
 
         const cleanPayload = normalizeEmployeeProfilePayload({
           ...employeePayload,
-          uid: editingUserId,
-          authUid: editingUserId,
+          employeeId: canonicalEmpId,
+          empId: canonicalEmpId,
+          id: canonicalUserDocId,
+          uid: canonicalUserDocId,
+          authUid: candidateAuthUid || canonicalUserDocId,
           assignedRole: canonicalRole,
           createdAt: existingUser?.createdAt || new Date().toISOString()
         });
 
-        batch.update(userRef, cleanPayload);
+        // 1. Dual-Collection Atomic Sync: Write to /users/{authUid || empId}
+        batch.set(userRef, cleanPayload, { merge: true });
         
-        const empDocId = safeEmpId || editingUserId;
-        const empDocRef = doc(db, COLLECTIONS.EMPLOYEES || 'employees', empDocId);
+        // 2. Dual-Collection Atomic Sync: Write to /employees/{empId}
         batch.set(empDocRef, {
           ...cleanPayload,
-          id: empDocId,
-          authUid: editingUserId,
-          uid: editingUserId
+          id: canonicalEmpId,
+          employeeId: canonicalEmpId,
+          empId: canonicalEmpId,
+          authUid: candidateAuthUid || canonicalUserDocId,
+          uid: candidateAuthUid || canonicalUserDocId
         }, { merge: true });
+
+        // 3. Clean up orphaned email-slug documents to prevent ghost records resurrecting old emails
+        const oldSlugsToDelete = new Set<string>();
+        if (existingUser?.id && existingUser.id !== canonicalUserDocId && existingUser.id !== canonicalEmpId) {
+          oldSlugsToDelete.add(existingUser.id);
+        }
+        if (editingUserId && editingUserId !== canonicalUserDocId && editingUserId !== canonicalEmpId) {
+          oldSlugsToDelete.add(editingUserId);
+        }
+        if (originalEmail) {
+          oldSlugsToDelete.add(originalEmail);
+          oldSlugsToDelete.add(originalEmail.replace(/[@.]/g, '_'));
+          oldSlugsToDelete.add(originalEmail.toLowerCase().replace(/[^a-z0-9]/g, '_'));
+          oldSlugsToDelete.add(safeStringIdentifier(originalEmail));
+        }
+        const originalPersonal = (editingOriginalUser?.personalEmail || editingOriginalUser?.personalEmailAddress || '').trim().toLowerCase();
+        if (originalPersonal) {
+          oldSlugsToDelete.add(originalPersonal);
+          oldSlugsToDelete.add(originalPersonal.replace(/[@.]/g, '_'));
+          oldSlugsToDelete.add(originalPersonal.toLowerCase().replace(/[^a-z0-9]/g, '_'));
+        }
+        oldSlugsToDelete.delete(canonicalUserDocId);
+        oldSlugsToDelete.delete(canonicalEmpId);
+
+        for (const oldSlug of oldSlugsToDelete) {
+          if (oldSlug && oldSlug.length > 2) {
+            batch.delete(doc(db, COLLECTIONS.USERS, oldSlug));
+            batch.delete(doc(db, COLLECTIONS.EMPLOYEES || 'employees', oldSlug));
+          }
+        }
+
+        // 4. Update active projects and clients referencing old corporate email
+        const emailChanged = Boolean(originalEmail && originalEmail !== emailTrimmed);
+        if (emailChanged) {
+          try {
+            const pDesignerQuery = query(collection(db, COLLECTIONS.PROJECTS), where('designerEmail', '==', originalEmail));
+            const pDesignerSnap = await getDocs(pDesignerQuery).catch(() => null);
+            if (pDesignerSnap && !pDesignerSnap.empty) {
+              pDesignerSnap.forEach(pDoc => {
+                batch.update(pDoc.ref, { designerEmail: emailTrimmed });
+              });
+            }
+
+            const pSalesQuery = query(collection(db, COLLECTIONS.PROJECTS), where('salesPersonEmail', '==', originalEmail));
+            const pSalesSnap = await getDocs(pSalesQuery).catch(() => null);
+            if (pSalesSnap && !pSalesSnap.empty) {
+              pSalesSnap.forEach(pDoc => {
+                batch.update(pDoc.ref, { salesPersonEmail: emailTrimmed });
+              });
+            }
+
+            // Update clients referencing old email
+            const cSalesQuery = query(collection(db, COLLECTIONS.CLIENTS), where(CLIENT_FIELDS.SALES_PERSON_EMAIL, '==', originalEmail));
+            const cSalesSnap = await getDocs(cSalesQuery).catch(() => null);
+            if (cSalesSnap && !cSalesSnap.empty) {
+              cSalesSnap.forEach(cDoc => {
+                batch.update(cDoc.ref, { 
+                  [CLIENT_FIELDS.SALES_PERSON_EMAIL]: emailTrimmed,
+                  originalSalesEmail: emailTrimmed
+                });
+              });
+            }
+          } catch (migrErr) {
+            console.warn('Non-blocking project/client email reference migration warning:', migrErr);
+          }
+        }
 
         // Reassignment logic if role changed from sales
         if (oldDep.includes('sales') && !newDep.includes('sales')) {
           const clientsRef = collection(db, COLLECTIONS.CLIENTS);
-          const q = query(clientsRef, where(CLIENT_FIELDS.SALES_PERSON_EMAIL, '==', existingUser?.email?.toLowerCase() || emailTrimmed));
-          const snap = await getDocs(q);
-          snap.forEach((clientDoc) => {
-            batch.update(clientDoc.ref, {
-              [CLIENT_FIELDS.SALES_PERSON_EMAIL]: FALLBACK_ADMIN,
-              originalSalesEmail: emailTrimmed
+          const q = query(clientsRef, where(CLIENT_FIELDS.SALES_PERSON_EMAIL, '==', originalEmail || emailTrimmed));
+          const snap = await getDocs(q).catch(() => null);
+          if (snap && !snap.empty) {
+            snap.forEach((clientDoc) => {
+              batch.update(clientDoc.ref, {
+                [CLIENT_FIELDS.SALES_PERSON_EMAIL]: FALLBACK_ADMIN,
+                originalSalesEmail: emailTrimmed
+              });
             });
-          });
+          }
         }
 
         await batch.commit();
-        setSuccessMsg(`Employee record "${nameTrimmed}" [${safeEmpId}] updated successfully.`);
+
+        // 5. Update local state immediately so UI table reflects the new email with NO refresh required
+        const updatedLocalUser: UserDocument = {
+          ...(existingUser || {}),
+          ...employeePayload,
+          name: nameTrimmed,
+          id: canonicalEmpId,
+          uid: canonicalUserDocId,
+          employeeId: canonicalEmpId,
+          empId: canonicalEmpId,
+          email: emailTrimmed,
+          officialEmail: emailTrimmed,
+          role: canonicalRole,
+          personalEmail: personalEmailTrimmed,
+          personalEmailAddress: personalEmailTrimmed,
+          createdAt: existingUser?.createdAt || new Date().toISOString()
+        };
+
+        const nextUsers = users.map(u => {
+          const matchesThis = 
+            u.id === editingUserId || 
+            (editingOriginalUser && u.id === editingOriginalUser.id) ||
+            (u.employeeId && u.employeeId.toUpperCase() === canonicalEmpId) ||
+            (originalEmpId && (u.employeeId || '').toUpperCase() === originalEmpId) ||
+            (originalEmail && (u.email || '').toLowerCase() === originalEmail);
+          return matchesThis ? updatedLocalUser : u;
+        });
+
+        setUsers(nextUsers);
+        setCachedEmployees(nextUsers);
+
+        setSuccessMsg(`Employee record "${nameTrimmed}" [${canonicalEmpId}] updated successfully.`);
       } else {
         // SEC-01: Atomic User Document Keying via canonical /users/{uid}
         await provisionUserRecord({
@@ -905,10 +1077,10 @@ export default function UserManagementTab({ currentEmail, currentRole }: UserMan
       await loadUsers();
       setIsModalOpen(false);
       setTimeout(() => setSuccessMsg(null), 4500);
-    } catch (err) {
+    } catch (err: any) {
       console.error('Error saving employee:', err);
       handleFirestoreError(err, OperationType.UPDATE, 'users');
-      setFormError('Failed to save employee to server.');
+      setFormError(`Failed to save employee to server: ${err?.message || 'Please check Firestore rules and network.'}`);
     } finally {
       setSubmitting(false);
     }
@@ -1610,8 +1782,8 @@ export default function UserManagementTab({ currentEmail, currentRole }: UserMan
               <tbody className="divide-y divide-[#333333]">
                 {filteredUsers.map((u, idx) => {
                   const isCurrentLoggedIn = (u.email || '').toLowerCase() === currentEmail.toLowerCase();
-                  const isPartnerJay = (u.name || '').toLowerCase().includes('jay shah') || (u.email || '').includes('jayshah') || (u.personalEmail || '').includes('jayjalpa') || (u.personalEmailAddress || '').includes('jayjalpa');
-                  const isPartnerDeep = (u.name || '').toLowerCase().includes('deep davara') || (u.email || '').includes('deepdavara');
+                  const isPartnerJay = (u.name || '').toLowerCase().includes('jay shah') || (u.email || '').includes('jayshah') || (u.personalEmail || '').includes('jayjalpa') || (u.personalEmailAddress || '').includes('jayjalpa') || (u.employeeId || '').includes('JS-001');
+                  const isPartnerDeep = (u.name || '').toLowerCase().includes('deep davara') || (u.email || '').includes('deepdavara') || (u.personalEmail || '').includes('deepdavara') || (u.personalEmailAddress || '').includes('deepdavara') || (u.employeeId || '').includes('DD-002');
                   const empId = isPartnerJay ? 'SDM-JS-001' : (isPartnerDeep ? 'SDM-DD-002' : (u.employeeId || `SOL-EMP-${String(idx + 1).padStart(2, '0')}`));
                   const bankName = u.bankDetails?.bankName || u.bankName || '';
                   const rawAcc = u.bankDetails?.accountNumber || u.accountNumber || '';
@@ -1850,7 +2022,7 @@ export default function UserManagementTab({ currentEmail, currentRole }: UserMan
                     </label>
                     <input
                       type="email"
-                      value={formData.email}
+                      value={formData.email || ''}
                       onChange={(e) => setFormData({ ...formData, email: e.target.value })}
                       placeholder="e.g. designer@solarithm.com"
                       required
@@ -2043,8 +2215,12 @@ export default function UserManagementTab({ currentEmail, currentRole }: UserMan
                     </label>
                     <input
                       type="email"
-                      value={formData.personalEmailAddress}
-                      onChange={(e) => setFormData({ ...formData, personalEmailAddress: e.target.value.toLowerCase() })}
+                      value={formData.personalEmail || formData.personalEmailAddress || ''}
+                      onChange={(e) => setFormData({ 
+                        ...formData, 
+                        personalEmail: e.target.value.toLowerCase(), 
+                        personalEmailAddress: e.target.value.toLowerCase() 
+                      })}
                       placeholder="e.g. employee.personal@gmail.com"
                       required
                       className="w-full px-3.5 py-2 bg-[#161B22] border border-[#30363D] text-white focus:border-[#D4AF37] rounded-lg text-sm focus:outline-none transition-all placeholder:text-gray-500"

@@ -7,7 +7,8 @@ import {
 import { 
   getFirestore, 
   initializeFirestore,
-  memoryLocalCache,
+  persistentLocalCache,
+  persistentMultipleTabManager,
   doc, 
   getDoc, 
   getDocFromServer, 
@@ -32,11 +33,13 @@ const firebaseConfig = {
 // Ensure only one instance of the app is initialized
 const app = !getApps().length ? initializeApp(firebaseConfig) : getApp();
 
-// Configure Firestore with in-memory cache to prevent IndexedDB BloomFilterError and cache index corruption
+// Clean persistent local cache configuration to prevent BloomFilter error and tab sync corruption
 let firestoreDb: ReturnType<typeof getFirestore>;
 try {
   firestoreDb = initializeFirestore(app, {
-    localCache: memoryLocalCache()
+    localCache: persistentLocalCache({
+      tabManager: persistentMultipleTabManager()
+    })
   });
 } catch {
   firestoreDb = getFirestore(app);
@@ -61,8 +64,10 @@ export const OWNER_EMAILS = [
   'jayjalpa2002@gmail.com',
   'jayshah.03@solarithmdesign.com',
   'jayshah@solarithmdesign.com',
-  'deepdavara@solarithmdesign.com',
   'deepdavara@gmail.com',
+  'deepdavara23@gmail.com',
+  'deepdavara.23@solarithmdesign.com',
+  'deepdavara@solarithmdesign.com',
   'connect@solarithmdesign.com'
 ];
 
@@ -71,8 +76,10 @@ export const SUPER_ADMIN_EMAILS = [
   'jay.solarithm@gmail.com',
   'jayshah.03@solarithmdesign.com',
   'jayshah@solarithmdesign.com',
-  'deepdavara@solarithmdesign.com',
   'deepdavara@gmail.com',
+  'deepdavara23@gmail.com',
+  'deepdavara.23@solarithmdesign.com',
+  'deepdavara@solarithmdesign.com',
   'connect@solarithmdesign.com'
 ];
 
@@ -84,11 +91,14 @@ export function isOwnerEmail(email?: string | null): boolean {
     norm === 'jayjalpa2002@gmail.com' ||
     norm === 'jayshah.03@solarithmdesign.com' ||
     norm === 'jayshah@solarithmdesign.com' ||
-    norm === 'deepdavara@solarithmdesign.com' ||
     norm === 'deepdavara@gmail.com' ||
+    norm === 'deepdavara23@gmail.com' ||
+    norm === 'deepdavara.23@solarithmdesign.com' ||
+    norm === 'deepdavara@solarithmdesign.com' ||
     norm === 'connect@solarithmdesign.com' ||
     norm.includes('jayjalpa') ||
-    norm.includes('jayshah.03')
+    norm.includes('jayshah') ||
+    norm.includes('deepdavara')
   );
 }
 
@@ -153,9 +163,12 @@ export interface UserDocument {
   panNumber?: string;
   aadhaarNumber?: string;
   personalEmail?: string;
+  officialEmail?: string;
+  empId?: string;
   accessibleApps?: string[];
   createdAt: string;
   updatedAt?: string;
+  [key: string]: any;
 }
 
 export interface UserAccessDocument {
@@ -240,6 +253,7 @@ export interface PricingCategoryHistoryEntry {
 
 export interface ClientSubscriptionPlan {
   planId: string;
+  packageType?: string;
   scopeCovered: string;
   projectsPerMonth: number;
   durationMonths: number;
@@ -249,6 +263,7 @@ export interface ClientSubscriptionPlan {
   startDate: string;
   endDate: string;
   status: 'active' | 'expired' | 'cancelled';
+  packageSalesIncentive?: number;
 }
 
 export interface ClientDocument {
@@ -261,7 +276,8 @@ export interface ClientDocument {
   gstin?: string;
   submittedBy: string;
   salesPersonEmail?: string;
-  originalSalesEmail?: string;
+  originalSalesPersonEmail?: string; // Permanent acquiring sales rep (locked across renewal cycles)
+  originalSalesEmail?: string; // backwards compatibility alias
   status: 'pending_approval' | 'approved' | 'rejected';
   pricingCategory?: PricingCategory;
   commercialModel?: 'PER_KW' | 'FIXED_PACKAGE';

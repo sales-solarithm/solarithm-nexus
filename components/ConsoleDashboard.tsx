@@ -17,15 +17,20 @@ import ProjectEntryModal from './ProjectEntryModal';
 import { 
   db,
   SUPER_ADMIN_EMAILS, 
-  UserRole 
+  UserRole,
+  UserDocument 
 } from '@/lib/firebase';
 import { 
   collection, 
   query, 
   where, 
   onSnapshot,
-  getDocs
+  getDocs,
+  doc,
+  deleteDoc
 } from 'firebase/firestore';
+import { deduplicateEmployeeList } from '@/lib/employeeImportService';
+import { syncEmployeesAndUsers } from '@/lib/userService';
 import { 
   COLLECTIONS, 
   CLIENT_STATUS, 
@@ -107,23 +112,34 @@ export default function ConsoleDashboard({ email, role, name, onNavigateTab }: C
     };
 
     try {
-      // 1. Total Employees: Count unique personnel across USERS and EMPLOYEES collections
-      const userDocMap = new Map<string, string>();
-      const empDocMap = new Map<string, string>();
+      // 1. Total Employees: Unified Deduplication across USERS and EMPLOYEES collections
+      const userDocsMap = new Map<string, UserDocument>();
+      const empDocsMap = new Map<string, UserDocument>();
 
       const syncEmployeeMetrics = () => {
-        const uniqueKeys = new Set<string>();
-        userDocMap.forEach((email, id) => uniqueKeys.add(email || id));
-        empDocMap.forEach((email, id) => uniqueKeys.add(email || id));
-        setMetrics(prev => ({ ...prev, totalEmployees: uniqueKeys.size }));
+        const { mergedEmployees, duplicateDocIdsToPurge } = syncEmployeesAndUsers(
+          Array.from(userDocsMap.values()),
+          Array.from(empDocsMap.values())
+        );
+        setMetrics(prev => ({ ...prev, totalEmployees: mergedEmployees.length }));
+
+        // Background cleanup: purge detected duplicate ghost documents
+        if (duplicateDocIdsToPurge && duplicateDocIdsToPurge.size > 0) {
+          const masterIds = new Set(mergedEmployees.map(u => u.id));
+          for (const dupId of duplicateDocIdsToPurge) {
+            if (!masterIds.has(dupId)) {
+              deleteDoc(doc(db, COLLECTIONS.USERS, dupId)).catch(() => {});
+              deleteDoc(doc(db, COLLECTIONS.EMPLOYEES || 'employees', dupId)).catch(() => {});
+            }
+          }
+        }
       };
 
       const usersQuery = query(collection(db, COLLECTIONS.USERS));
       unsubUsers = onSnapshot(usersQuery, (snap) => {
-        userDocMap.clear();
+        userDocsMap.clear();
         snap.forEach(d => {
-          const email = (d.data().email || '').trim().toLowerCase();
-          userDocMap.set(d.id, email);
+          userDocsMap.set(d.id, { ...(d.data() as UserDocument), id: d.id });
         });
         syncEmployeeMetrics();
       }, (err) => {
@@ -132,10 +148,9 @@ export default function ConsoleDashboard({ email, role, name, onNavigateTab }: C
 
       const empQuery = query(collection(db, COLLECTIONS.EMPLOYEES || 'employees'));
       unsubEmployees = onSnapshot(empQuery, (snap) => {
-        empDocMap.clear();
+        empDocsMap.clear();
         snap.forEach(d => {
-          const email = (d.data().email || '').trim().toLowerCase();
-          empDocMap.set(d.id, email);
+          empDocsMap.set(d.id, { ...(d.data() as UserDocument), id: d.id });
         });
         syncEmployeeMetrics();
       }, (err) => {
@@ -247,20 +262,30 @@ export default function ConsoleDashboard({ email, role, name, onNavigateTab }: C
         getDocs(query(collection(db, 'approvals'), where('type', '==', 'PASSWORD_RESET_REQUEST'))).catch(() => null)
       ]);
 
-      const uniqueEmployees = new Set<string>();
+      const rawEmployeesList: UserDocument[] = [];
       if (usersSnap) {
         usersSnap.forEach(d => {
-          const email = (d.data().email || '').trim().toLowerCase();
-          uniqueEmployees.add(email || d.id);
+          rawEmployeesList.push({ ...(d.data() as UserDocument), id: d.id });
         });
       }
       if (empSnap) {
         empSnap.forEach(d => {
-          const email = (d.data().email || '').trim().toLowerCase();
-          uniqueEmployees.add(email || d.id);
+          rawEmployeesList.push({ ...(d.data() as UserDocument), id: d.id });
         });
       }
-      const totalEmployees = uniqueEmployees.size;
+      const { dedupedList, duplicateDocIdsToPurge } = deduplicateEmployeeList(rawEmployeesList);
+      const totalEmployees = dedupedList.length;
+
+      // Clean up orphaned documents in background
+      if (duplicateDocIdsToPurge && duplicateDocIdsToPurge.size > 0) {
+        const masterIds = new Set(dedupedList.map(u => u.id));
+        for (const dupId of duplicateDocIdsToPurge) {
+          if (!masterIds.has(dupId)) {
+            deleteDoc(doc(db, COLLECTIONS.USERS, dupId)).catch(() => {});
+            deleteDoc(doc(db, COLLECTIONS.EMPLOYEES || 'employees', dupId)).catch(() => {});
+          }
+        }
+      }
       
       let activeClients = 0;
       let pendingClients = 0;

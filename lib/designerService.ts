@@ -181,11 +181,11 @@ export async function fetchEligibleDesigners(): Promise<DesignerProfile[]> {
             let canonicalEmpId = empId;
 
             if (name.toLowerCase().includes('jay shah') || email.includes('jayshah')) {
-              officialEmail = 'jayshah.03@solarithmdesign.com';
-              canonicalEmpId = 'SDM-JS-001';
+              officialEmail = email || 'jayshah.03@solarithmdesign.com';
+              canonicalEmpId = empId || 'SDM-JS-001';
             } else if (name.toLowerCase().includes('deep davara') || email.includes('deepdavara')) {
-              officialEmail = 'deepdavara@solarithmdesign.com';
-              canonicalEmpId = 'SDM-DD-002';
+              officialEmail = email || 'deepdavara.23@solarithmdesign.com';
+              canonicalEmpId = empId || 'SDM-DD-002';
             }
 
             const profile: DesignerProfile = {
@@ -234,11 +234,11 @@ export async function fetchEligibleDesigners(): Promise<DesignerProfile[]> {
             let canonicalEmpId = empId;
 
             if (name.toLowerCase().includes('jay shah') || email.includes('jayshah')) {
-              officialEmail = 'jayshah.03@solarithmdesign.com';
-              canonicalEmpId = 'SDM-JS-001';
+              officialEmail = email || 'jayshah.03@solarithmdesign.com';
+              canonicalEmpId = empId || 'SDM-JS-001';
             } else if (name.toLowerCase().includes('deep davara') || email.includes('deepdavara')) {
-              officialEmail = 'deepdavara@solarithmdesign.com';
-              canonicalEmpId = 'SDM-DD-002';
+              officialEmail = email || 'deepdavara.23@solarithmdesign.com';
+              canonicalEmpId = empId || 'SDM-DD-002';
             }
 
             const key = canonicalEmpId || officialEmail || docSnap.id;
@@ -317,7 +317,7 @@ export function bindProjectDesignerMetadata(designer: Partial<DesignerProfile> &
     inputEmail.includes('jayshah') ||
     canonicalId.includes('JS-001')
   ) {
-    officialWorkEmail = 'jayshah.03@solarithmdesign.com';
+    officialWorkEmail = (inputEmail && inputEmail.includes('@solarithmdesign.com')) ? inputEmail : (officialWorkEmail || 'jayshah.03@solarithmdesign.com');
     canonicalId = 'SDM-JS-001';
     isPartner = true;
   } else if (
@@ -325,7 +325,7 @@ export function bindProjectDesignerMetadata(designer: Partial<DesignerProfile> &
     inputEmail.includes('deepdavara') ||
     canonicalId.includes('DD-002')
   ) {
-    officialWorkEmail = 'deepdavara@solarithmdesign.com';
+    officialWorkEmail = (inputEmail && inputEmail.includes('@solarithmdesign.com')) ? inputEmail : (officialWorkEmail || 'deepdavara.23@solarithmdesign.com');
     canonicalId = 'SDM-DD-002';
     isPartner = true;
   } else if (

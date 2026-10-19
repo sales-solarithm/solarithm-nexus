@@ -9,7 +9,7 @@ import {
   limit, 
   serverTimestamp 
 } from 'firebase/firestore';
-import { db, isOwnerEmail } from '@/lib/firebase';
+import { db, isOwnerEmail, UserDocument } from '@/lib/firebase';
 import { COLLECTIONS } from '@/src/config/schema';
 import {
   sanitizeFirestorePayload,
@@ -329,6 +329,7 @@ export const CANONICAL_PARTNERS: CanonicalUserProfile[] = [
 /**
  * Ensures both canonical company partners (Jay Shah & Deep Davara) exist in /users and /employees
  * with their official work email, personal email, and canonical employee IDs.
+ * Strictly preserves any updated emails from existing records.
  */
 export async function ensureCanonicalPartnersExist(): Promise<void> {
   for (const partner of CANONICAL_PARTNERS) {
@@ -337,18 +338,32 @@ export async function ensureCanonicalPartnersExist(): Promise<void> {
       const snap = await getDoc(userDocRef);
       const existing = snap.exists() ? snap.data() : null;
 
+      const empDocId = partner.employeeId || partner.uid;
+      const empDocRef = doc(db, COLLECTIONS.EMPLOYEES || 'employees', empDocId);
+      const empSnap = await getDoc(empDocRef).catch(() => null);
+      const empExisting = empSnap && empSnap.exists() ? empSnap.data() : null;
+
+      const currentWorkEmail = (empExisting?.email || empExisting?.officialEmail || existing?.email || existing?.officialEmail || partner.email).trim().toLowerCase();
+      const currentPersonalEmail = (empExisting?.personalEmail || empExisting?.personalEmailAddress || existing?.personalEmail || existing?.personalEmailAddress || partner.personalEmail).trim().toLowerCase();
+      const currentName = empExisting?.name || existing?.name || partner.name;
+
       const payload = normalizeEmployeeProfilePayload({
-        ...(existing || {}),
         ...partner,
+        ...(existing || {}),
+        name: currentName,
+        email: currentWorkEmail,
+        officialEmail: currentWorkEmail,
+        personalEmail: currentPersonalEmail,
+        personalEmailAddress: currentPersonalEmail,
+        employeeId: partner.employeeId,
+        empId: partner.employeeId,
         authUid: partner.uid,
-        createdAt: existing?.createdAt || serverTimestamp(),
+        createdAt: existing?.createdAt || empExisting?.createdAt || serverTimestamp(),
         updatedAt: serverTimestamp()
       });
 
       await safeSetDoc(userDocRef, payload, { merge: true });
       try {
-        const empDocId = partner.employeeId || partner.uid;
-        const empDocRef = doc(db, COLLECTIONS.EMPLOYEES || 'employees', empDocId);
         await safeSetDoc(empDocRef, {
           ...payload,
           id: empDocId,
@@ -378,29 +393,39 @@ export async function ensureOwnerDocumentExists(): Promise<CanonicalUserProfile>
     // Also guarantee all company partners in background
     ensureCanonicalPartnersExist().catch((e) => console.warn('Ensure partners background notice:', e));
 
-    const snap = await getDoc(userDocRef);
-    const existing = snap.exists() ? snap.data() : null;
+    const empDocRef = doc(db, COLLECTIONS.EMPLOYEES || 'employees', 'SDM-JS-001');
+    const [snap, empSnap] = await Promise.all([
+      getDoc(userDocRef).catch(() => null),
+      getDoc(empDocRef).catch(() => null)
+    ]);
+    const existing = snap && snap.exists() ? snap.data() : null;
+    const empExisting = empSnap && empSnap.exists() ? empSnap.data() : null;
+
+    const currentWorkEmail = (empExisting?.email || empExisting?.officialEmail || existing?.email || existing?.officialEmail || ownerEmail).trim().toLowerCase();
+    const currentPersonalEmail = (empExisting?.personalEmail || empExisting?.personalEmailAddress || existing?.personalEmail || existing?.personalEmailAddress || personalEmail).trim().toLowerCase();
+    const currentName = empExisting?.name || existing?.name || 'Jay Shah';
 
     const rawPayload: CanonicalUserProfile = {
       ...(existing || {}),
       uid: ownerUid,
       id: ownerUid,
-      email: ownerEmail,
-      personalEmail: personalEmail,
-      personalEmailAddress: personalEmail,
-      name: 'Jay Shah',
+      email: currentWorkEmail,
+      officialEmail: currentWorkEmail,
+      personalEmail: currentPersonalEmail,
+      personalEmailAddress: currentPersonalEmail,
+      name: currentName,
       role: 'OWNER',
       status: 'ACTIVE',
       department: 'Executive Management',
       designation: 'Company Partner & Lead Solar Designer',
       employeeId: 'SDM-JS-001',
-      createdAt: existing?.createdAt || serverTimestamp(),
+      empId: 'SDM-JS-001',
+      createdAt: existing?.createdAt || empExisting?.createdAt || serverTimestamp(),
       updatedAt: serverTimestamp()
     };
     const payload = normalizeEmployeeProfilePayload(rawPayload) as CanonicalUserProfile;
     await safeSetDoc(userDocRef, payload, { merge: true });
     try {
-      const empDocRef = doc(db, COLLECTIONS.EMPLOYEES || 'employees', 'SDM-JS-001');
       await safeSetDoc(empDocRef, {
         ...payload,
         id: 'SDM-JS-001',
@@ -417,10 +442,13 @@ export async function ensureOwnerDocumentExists(): Promise<CanonicalUserProfile>
       uid: ownerUid,
       id: ownerUid,
       email: ownerEmail,
+      officialEmail: ownerEmail,
       personalEmail: personalEmail,
+      personalEmailAddress: personalEmail,
       name: 'Jay Shah',
       role: 'OWNER',
       employeeId: 'SDM-JS-001',
+      empId: 'SDM-JS-001',
       status: 'ACTIVE',
       createdAt: serverTimestamp(),
       updatedAt: serverTimestamp()
@@ -465,8 +493,8 @@ export async function syncUserDocumentOnLogin(currentUser: {
   // Canonical Partner Metadata Resolution
   let resolvedName = (currentUser.name || currentUser.displayName || existingData?.name || cleanEmail.split('@')[0] || 'User').trim();
   let canonicalEmpId = existingData?.employeeId || (isOwner ? 'SDM-JS-001' : `SOL-${uid.slice(0, 5)}`.toUpperCase());
-  let canonicalWorkEmail = cleanEmail;
-  let canonicalPersonalEmail = existingData?.personalEmail || existingData?.personalEmailAddress || '';
+  let canonicalWorkEmail = existingData?.email || (existingData as any)?.officialEmail || (cleanEmail.includes('@solarithmdesign.com') ? cleanEmail : '');
+  let canonicalPersonalEmail = existingData?.personalEmail || existingData?.personalEmailAddress || (!cleanEmail.includes('@solarithmdesign.com') ? cleanEmail : '');
   let designation = existingData?.designation || (isOwner ? 'Company Partner & Lead Solar Designer' : 'Staff');
   let department = existingData?.department || (isOwner ? 'Executive Management' : 'Operations');
 
@@ -476,22 +504,42 @@ export async function syncUserDocumentOnLogin(currentUser: {
     cleanEmail.includes('jayshah') ||
     resolvedName.toLowerCase().includes('jay shah')
   ) {
-    resolvedName = 'Jay Shah';
+    resolvedName = existingData?.name || 'Jay Shah';
     canonicalEmpId = 'SDM-JS-001';
-    canonicalWorkEmail = 'jayshah.03@solarithmdesign.com';
-    canonicalPersonalEmail = 'jayjalpa2002@gmail.com';
-    designation = 'Company Partner & Lead Solar Designer';
-    department = 'Executive Management';
+    canonicalWorkEmail = existingData?.email || (existingData as any)?.officialEmail || (cleanEmail.includes('@solarithmdesign.com') ? cleanEmail : 'jayshah.03@solarithmdesign.com');
+    canonicalPersonalEmail = existingData?.personalEmail || existingData?.personalEmailAddress || (!cleanEmail.includes('@solarithmdesign.com') ? cleanEmail : 'jayjalpa2002@gmail.com');
+    designation = existingData?.designation || 'Company Partner & Lead Solar Designer';
+    department = existingData?.department || 'Executive Management';
   } else if (
     cleanEmail.includes('deepdavara') ||
     resolvedName.toLowerCase().includes('deep davara')
   ) {
-    resolvedName = 'Deep Davara';
+    resolvedName = existingData?.name || 'Deep Davara';
     canonicalEmpId = 'SDM-DD-002';
-    canonicalWorkEmail = 'deepdavara@solarithmdesign.com';
-    canonicalPersonalEmail = 'deepdavara@gmail.com';
-    designation = 'Company Partner & Senior Solar Designer';
-    department = 'Executive Management';
+    canonicalWorkEmail = existingData?.email || (existingData as any)?.officialEmail || (cleanEmail.includes('@solarithmdesign.com') ? cleanEmail : 'deepdavara.23@solarithmdesign.com');
+    canonicalPersonalEmail = existingData?.personalEmail || existingData?.personalEmailAddress || (!cleanEmail.includes('@solarithmdesign.com') ? cleanEmail : 'deepdavara@gmail.com');
+    designation = existingData?.designation || 'Company Partner & Senior Solar Designer';
+    department = existingData?.department || 'Executive Management';
+  }
+
+  // Authoritative check from /employees to ensure we never overwrite an updated email with an older default
+  try {
+    const empDocRef = doc(db, COLLECTIONS.EMPLOYEES || 'employees', canonicalEmpId);
+    const empSnap = await getDoc(empDocRef);
+    if (empSnap.exists()) {
+      const empData = empSnap.data();
+      if (empData?.email || empData?.officialEmail) {
+        canonicalWorkEmail = (empData.email || empData.officialEmail).trim().toLowerCase();
+      }
+      if (empData?.personalEmail || empData?.personalEmailAddress) {
+        canonicalPersonalEmail = (empData.personalEmail || empData.personalEmailAddress).trim().toLowerCase();
+      }
+      if (empData?.name) {
+        resolvedName = empData.name;
+      }
+    }
+  } catch (empCheckErr) {
+    console.warn('KYC employee check notice:', empCheckErr);
   }
 
   const rawPayload: CanonicalUserProfile = {
@@ -499,6 +547,7 @@ export async function syncUserDocumentOnLogin(currentUser: {
     uid,
     id: uid,
     email: canonicalWorkEmail,
+    officialEmail: canonicalWorkEmail,
     personalEmail: canonicalPersonalEmail,
     personalEmailAddress: canonicalPersonalEmail,
     name: resolvedName,
@@ -508,7 +557,8 @@ export async function syncUserDocumentOnLogin(currentUser: {
     createdAt: existingData?.createdAt || serverTimestamp(),
     department,
     designation,
-    employeeId: canonicalEmpId
+    employeeId: canonicalEmpId,
+    empId: canonicalEmpId
   };
 
   const payload = normalizeEmployeeProfilePayload(rawPayload) as CanonicalUserProfile;
@@ -621,3 +671,187 @@ export async function deleteUserRecord(uid: string, email?: string): Promise<voi
     }
   }
 }
+
+/**
+ * Synchronize and merge employee records across /users and /employees collections.
+ * Map and deduplicate strictly by canonical empId / employeeId (e.g. SDM-JS-001, SDM-DD-002, SOL-EMP-03, etc.).
+ * Precedence rule: Authoritative KYC record (/employees) MUST always take precedence over /users.
+ * `const merged = { ...userDocData, ...employeeDocData };`
+ * Ensures the merged record uses the newly updated email from the latest Firestore snapshot.
+ */
+export function syncEmployeesAndUsers(
+  userDocs: UserDocument[],
+  empDocs: UserDocument[]
+): {
+  mergedEmployees: UserDocument[];
+  duplicateDocIdsToPurge: Set<string>;
+} {
+  const duplicateDocIdsToPurge = new Set<string>();
+  const empMap = new Map<string, { userDocData?: UserDocument; employeeDocData?: UserDocument }>();
+
+  const resolveEmpId = (docItem: UserDocument): string => {
+    const rawId = (docItem.employeeId || (docItem as any).empId || '').trim().toUpperCase();
+    const name = (docItem.name || '').trim().toLowerCase();
+    const email = (docItem.email || (docItem as any).officialEmail || '').trim().toLowerCase();
+    const pers = (docItem.personalEmail || docItem.personalEmailAddress || '').trim().toLowerCase();
+    const docId = (docItem.id || '').trim();
+
+    if (
+      name.includes('jay shah') ||
+      email.includes('jayshah') ||
+      pers.includes('jayjalpa') ||
+      rawId.includes('JS-001') ||
+      docId === 'oIZpuLeftqaj3j5KS9ZIvurklEE2'
+    ) {
+      return 'SDM-JS-001';
+    }
+    if (
+      name.includes('deep davara') ||
+      email.includes('deepdavara') ||
+      pers.includes('deepdavara') ||
+      rawId.includes('DD-002')
+    ) {
+      return 'SDM-DD-002';
+    }
+    if (rawId) {
+      return rawId.replace('-S0-', '-SO-');
+    }
+    return '';
+  };
+
+  // 1. Process /employees collection (authoritative KYC records)
+  for (const empDoc of empDocs) {
+    const empId = resolveEmpId(empDoc) || (empDoc.id && !empDoc.id.includes('@') ? empDoc.id.toUpperCase() : '');
+    if (empId) {
+      if (!empMap.has(empId)) {
+        empMap.set(empId, {});
+      }
+      empMap.get(empId)!.employeeDocData = empDoc;
+    }
+  }
+
+  // 2. Process /users collection
+  for (const userDoc of userDocs) {
+    let empId = resolveEmpId(userDoc);
+
+    if (!empId) {
+      const uPan = (userDoc.panCardNumber || userDoc.panNumber || '').trim().toUpperCase();
+      const uAadhaar = (userDoc.aadhaarCardNumber || userDoc.aadhaarNumber || '').replace(/\D/g, '');
+      const uEmail = (userDoc.email || '').trim().toLowerCase();
+      const uPers = (userDoc.personalEmail || userDoc.personalEmailAddress || '').trim().toLowerCase();
+
+      for (const [existingId, data] of empMap.entries()) {
+        const refDoc = data.employeeDocData || data.userDocData;
+        if (!refDoc) continue;
+        const refPan = (refDoc.panCardNumber || refDoc.panNumber || '').trim().toUpperCase();
+        const refAadhaar = (refDoc.aadhaarCardNumber || refDoc.aadhaarNumber || '').replace(/\D/g, '');
+        const refEmail = (refDoc.email || (refDoc as any).officialEmail || '').trim().toLowerCase();
+        const refPers = (refDoc.personalEmail || refDoc.personalEmailAddress || '').trim().toLowerCase();
+
+        if (
+          (uPan && refPan && uPan === refPan) ||
+          (uAadhaar && refAadhaar && uAadhaar === refAadhaar) ||
+          (uEmail && (uEmail === refEmail || uEmail === refPers)) ||
+          (uPers && (uPers === refEmail || uPers === refPers))
+        ) {
+          empId = existingId;
+          break;
+        }
+      }
+    }
+
+    if (empId) {
+      if (!empMap.has(empId)) {
+        empMap.set(empId, {});
+      }
+      const entry = empMap.get(empId)!;
+      if (entry.userDocData) {
+        // Ghost / duplicate user doc
+        const prevId = entry.userDocData.id;
+        if (prevId && (prevId.includes('@') || prevId.includes('_gmail_com') || prevId.includes('_solarithm'))) {
+          duplicateDocIdsToPurge.add(prevId);
+        }
+        if (userDoc.id && (userDoc.id.includes('@') || userDoc.id.includes('_gmail_com') || userDoc.id.includes('_solarithm'))) {
+          duplicateDocIdsToPurge.add(userDoc.id);
+        }
+        const prevTime = entry.userDocData.updatedAt ? new Date(entry.userDocData.updatedAt).getTime() : 0;
+        const currTime = userDoc.updatedAt ? new Date(userDoc.updatedAt).getTime() : 0;
+        if (currTime >= prevTime) {
+          entry.userDocData = userDoc;
+        }
+      } else {
+        entry.userDocData = userDoc;
+      }
+
+      if (userDoc.id && (userDoc.id.includes('@') || userDoc.id.includes('_gmail_com') || userDoc.id.includes('_solarithmdesign_com'))) {
+        duplicateDocIdsToPurge.add(userDoc.id);
+      }
+    } else {
+      if (userDoc.id && (userDoc.id.includes('@') || userDoc.id.includes('_gmail_com') || userDoc.id.includes('_solarithm'))) {
+        duplicateDocIdsToPurge.add(userDoc.id);
+      }
+    }
+  }
+
+  // 3. Merging: Authoritative KYC record (/employees) MUST always take precedence over /users
+  const mergedEmployees: UserDocument[] = [];
+
+  for (const [empId, { userDocData, employeeDocData }] of empMap.entries()) {
+    if (!employeeDocData && !userDocData) continue;
+
+    let merged: UserDocument;
+    if (userDocData && employeeDocData) {
+      // Authoritative KYC record (/employees) must always take precedence over /users
+      merged = {
+        ...userDocData,
+        ...employeeDocData,
+        employeeId: empId,
+        empId: empId,
+        email: (employeeDocData.email || (employeeDocData as any).officialEmail || userDocData.email || '').trim().toLowerCase(),
+        officialEmail: (employeeDocData.email || (employeeDocData as any).officialEmail || userDocData.email || '').trim().toLowerCase(),
+        personalEmail: (employeeDocData.personalEmail || employeeDocData.personalEmailAddress || userDocData.personalEmail || userDocData.personalEmailAddress || '').trim().toLowerCase(),
+        personalEmailAddress: (employeeDocData.personalEmail || employeeDocData.personalEmailAddress || userDocData.personalEmail || userDocData.personalEmailAddress || '').trim().toLowerCase(),
+        name: employeeDocData.name || userDocData.name || '',
+        id: employeeDocData.id || empId,
+        uid: userDocData.uid || userDocData.id || employeeDocData.authUid || employeeDocData.uid || empId
+      };
+    } else if (employeeDocData) {
+      merged = {
+        ...employeeDocData,
+        employeeId: empId,
+        empId: empId,
+        email: (employeeDocData.email || (employeeDocData as any).officialEmail || '').trim().toLowerCase(),
+        officialEmail: (employeeDocData.email || (employeeDocData as any).officialEmail || '').trim().toLowerCase(),
+        personalEmail: (employeeDocData.personalEmail || employeeDocData.personalEmailAddress || '').trim().toLowerCase(),
+        personalEmailAddress: (employeeDocData.personalEmail || employeeDocData.personalEmailAddress || '').trim().toLowerCase(),
+        id: employeeDocData.id || empId
+      };
+    } else {
+      merged = {
+        ...userDocData!,
+        employeeId: empId,
+        empId: empId,
+        email: (userDocData!.email || (userDocData as any)!.officialEmail || '').trim().toLowerCase(),
+        officialEmail: (userDocData!.email || (userDocData as any)!.officialEmail || '').trim().toLowerCase(),
+        personalEmail: (userDocData!.personalEmail || userDocData!.personalEmailAddress || '').trim().toLowerCase(),
+        personalEmailAddress: (userDocData!.personalEmail || userDocData!.personalEmailAddress || '').trim().toLowerCase(),
+        id: userDocData!.id || empId
+      };
+    }
+
+    if (merged.role) {
+      merged.role = normalizeRole(merged.role);
+    }
+    mergedEmployees.push(merged);
+  }
+
+  mergedEmployees.sort((a, b) => {
+    const idA = (a.employeeId || '').toUpperCase();
+    const idB = (b.employeeId || '').toUpperCase();
+    if (idA && idB) return idA.localeCompare(idB);
+    return (a.name || '').localeCompare(b.name || '');
+  });
+
+  return { mergedEmployees, duplicateDocIdsToPurge };
+}
+
