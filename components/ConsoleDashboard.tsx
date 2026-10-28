@@ -26,8 +26,7 @@ import {
   where, 
   onSnapshot,
   getDocs,
-  doc,
-  deleteDoc
+  doc
 } from 'firebase/firestore';
 import { deduplicateEmployeeList } from '@/lib/employeeImportService';
 import { syncEmployeesAndUsers } from '@/lib/userService';
@@ -117,22 +116,11 @@ export default function ConsoleDashboard({ email, role, name, onNavigateTab }: C
       const empDocsMap = new Map<string, UserDocument>();
 
       const syncEmployeeMetrics = () => {
-        const { mergedEmployees, duplicateDocIdsToPurge } = syncEmployeesAndUsers(
+        const { mergedEmployees } = syncEmployeesAndUsers(
           Array.from(userDocsMap.values()),
           Array.from(empDocsMap.values())
         );
         setMetrics(prev => ({ ...prev, totalEmployees: mergedEmployees.length }));
-
-        // Background cleanup: purge detected duplicate ghost documents
-        if (duplicateDocIdsToPurge && duplicateDocIdsToPurge.size > 0) {
-          const masterIds = new Set(mergedEmployees.map(u => u.id));
-          for (const dupId of duplicateDocIdsToPurge) {
-            if (!masterIds.has(dupId)) {
-              deleteDoc(doc(db, COLLECTIONS.USERS, dupId)).catch(() => {});
-              deleteDoc(doc(db, COLLECTIONS.EMPLOYEES || 'employees', dupId)).catch(() => {});
-            }
-          }
-        }
       };
 
       const usersQuery = query(collection(db, COLLECTIONS.USERS));
@@ -273,19 +261,8 @@ export default function ConsoleDashboard({ email, role, name, onNavigateTab }: C
           rawEmployeesList.push({ ...(d.data() as UserDocument), id: d.id });
         });
       }
-      const { dedupedList, duplicateDocIdsToPurge } = deduplicateEmployeeList(rawEmployeesList);
+      const { dedupedList } = deduplicateEmployeeList(rawEmployeesList);
       const totalEmployees = dedupedList.length;
-
-      // Clean up orphaned documents in background
-      if (duplicateDocIdsToPurge && duplicateDocIdsToPurge.size > 0) {
-        const masterIds = new Set(dedupedList.map(u => u.id));
-        for (const dupId of duplicateDocIdsToPurge) {
-          if (!masterIds.has(dupId)) {
-            deleteDoc(doc(db, COLLECTIONS.USERS, dupId)).catch(() => {});
-            deleteDoc(doc(db, COLLECTIONS.EMPLOYEES || 'employees', dupId)).catch(() => {});
-          }
-        }
-      }
       
       let activeClients = 0;
       let pendingClients = 0;

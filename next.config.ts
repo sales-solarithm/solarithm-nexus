@@ -9,8 +9,9 @@ const nextConfig: NextConfig = {
   typescript: {
     ignoreBuildErrors: false,
   },
-  // Allow access to remote image placeholder.
+  // Allow access to remote image placeholder with static export compatibility
   images: {
+    unoptimized: true,
     remotePatterns: [
       {
         protocol: 'https',

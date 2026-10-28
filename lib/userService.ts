@@ -254,13 +254,29 @@ export async function provisionUserRecord(
   const userDocRef = doc(db, COLLECTIONS.USERS, targetUid);
   await safeSetDoc(userDocRef, payload, { merge: true });
 
-  // 3. DIRECTIVE 3 #3: Maintain canonical Employee ID in /employees while linking Auth UID
+  // 3. Maintain canonical Employee ID in /employees with deterministic mapping for owner accounts
   try {
-    const empDocId = empId || targetUid;
+    let empDocId = empId || targetUid;
+    if (
+      cleanEmail === 'jayjalpa2002@gmail.com' ||
+      cleanEmail === 'jayshah.03@solarithmdesign.com' ||
+      cleanEmail === 'jay.solarithm@gmail.com' ||
+      targetUid === 'oIZpuLeftqaj3j5KS9ZIvurklEE2'
+    ) {
+      empDocId = 'SDM-JS-001';
+    } else if (
+      cleanEmail.includes('deepdavara') ||
+      cleanEmail === 'deepdavara23@gmail.com' ||
+      cleanEmail === 'deepdavara@gmail.com' ||
+      cleanEmail === 'deepdavara.23@solarithmdesign.com'
+    ) {
+      empDocId = 'SDM-DD-002';
+    }
     const empDocRef = doc(db, COLLECTIONS.EMPLOYEES || 'employees', empDocId);
     await safeSetDoc(empDocRef, {
       ...payload,
       id: empDocId,
+      employeeId: empDocId,
       authUid: targetUid,
       uid: targetUid
     }, { merge: true });
@@ -472,13 +488,6 @@ export async function syncUserDocumentOnLogin(currentUser: {
   const isOwner = isOwnerEmail(cleanEmail) || cleanEmail === 'jayjalpa2002@gmail.com' || cleanEmail === 'jay.solarithm@gmail.com' || uid === 'oIZpuLeftqaj3j5KS9ZIvurklEE2' || cleanEmail.includes('deepdavara');
   const role = isOwner ? 'OWNER' : (currentUser.role ? (currentUser.role.toUpperCase() === 'OWNER' ? 'OWNER' : normalizeRole(currentUser.role)) : 'EMPLOYEE');
 
-  // If this is the primary owner UID or email, ensure canonical properties
-  if (uid === 'oIZpuLeftqaj3j5KS9ZIvurklEE2' || cleanEmail === 'jayjalpa2002@gmail.com' || cleanEmail.includes('jayshah')) {
-    await ensureOwnerDocumentExists().catch((err) => console.warn('Ensure owner document caught:', err));
-  } else {
-    ensureCanonicalPartnersExist().catch((err) => console.warn('Ensure partners caught:', err));
-  }
-
   const userDocRef = doc(db, COLLECTIONS.USERS, uid);
   let existingData: any = null;
   try {
@@ -512,6 +521,7 @@ export async function syncUserDocumentOnLogin(currentUser: {
     department = existingData?.department || 'Executive Management';
   } else if (
     cleanEmail.includes('deepdavara') ||
+    cleanEmail === 'deepdavara23@gmail.com' ||
     resolvedName.toLowerCase().includes('deep davara')
   ) {
     resolvedName = existingData?.name || 'Deep Davara';
@@ -542,6 +552,33 @@ export async function syncUserDocumentOnLogin(currentUser: {
     console.warn('KYC employee check notice:', empCheckErr);
   }
 
+  // Only write to /users/{uid} when the user's profile fields have actually changed
+  const targetRole = isOwner ? 'OWNER' : role;
+  const hasChanged = !existingData ||
+    (existingData.email || '').toLowerCase() !== canonicalWorkEmail.toLowerCase() ||
+    (existingData.name || '') !== resolvedName ||
+    (existingData.employeeId || '') !== canonicalEmpId ||
+    (existingData.role || '').toUpperCase() !== targetRole.toUpperCase() ||
+    existingData.status !== 'ACTIVE';
+
+  if (!hasChanged) {
+    return {
+      ...existingData,
+      uid,
+      id: uid,
+      email: canonicalWorkEmail,
+      officialEmail: canonicalWorkEmail,
+      personalEmail: canonicalPersonalEmail,
+      personalEmailAddress: canonicalPersonalEmail,
+      name: resolvedName,
+      role: targetRole,
+      department,
+      designation,
+      employeeId: canonicalEmpId,
+      empId: canonicalEmpId
+    } as CanonicalUserProfile;
+  }
+
   const rawPayload: CanonicalUserProfile = {
     ...existingData,
     uid,
@@ -551,7 +588,7 @@ export async function syncUserDocumentOnLogin(currentUser: {
     personalEmail: canonicalPersonalEmail,
     personalEmailAddress: canonicalPersonalEmail,
     name: resolvedName,
-    role: isOwner ? 'OWNER' : role,
+    role: targetRole,
     status: 'ACTIVE',
     updatedAt: serverTimestamp(),
     createdAt: existingData?.createdAt || serverTimestamp(),
@@ -563,10 +600,10 @@ export async function syncUserDocumentOnLogin(currentUser: {
 
   const payload = normalizeEmployeeProfilePayload(rawPayload) as CanonicalUserProfile;
 
-  // Atomically write to /users/{uid} using canonical Auth UID
+  // Atomically write to /users/{uid} using canonical Auth UID only on change
   await safeSetDoc(userDocRef, payload, { merge: true });
 
-  // DIRECTIVE 3 #3: Mirror to /employees maintaining canonical Employee ID as doc ID while linking Auth UID
+  // Mirror to /employees maintaining canonical Employee ID as doc ID while linking Auth UID
   try {
     const empDocId = canonicalEmpId || uid;
     const empDocRef = doc(db, COLLECTIONS.EMPLOYEES || 'employees', empDocId);

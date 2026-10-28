@@ -50,7 +50,8 @@ import {
   Tag,
   ShieldCheck,
   Check,
-  SlidersHorizontal
+  SlidersHorizontal,
+  Plus
 } from 'lucide-react';
 import { 
   db, 
@@ -58,11 +59,13 @@ import {
   UserRole, 
   ClientDocument,
   UserDocument,
+  ProposalDocument,
   DEFAULT_PRICING_CATEGORIES,
   handleFirestoreError,
   OperationType
 } from '@/lib/firebase';
 import { ConfirmModal } from './ConfirmModal';
+import ClientModal from '@/components/ClientModal';
 import { useDataCache } from '@/components/DataCacheContext';
 
 interface ClientsTabProps {
@@ -91,9 +94,16 @@ export default function ClientsTab({ currentEmail, currentRole }: ClientsTabProp
     }
     return [];
   });
+
+
+
   const [loading, setLoading] = useState(canManageClients && (!cachedClients || cachedClients.length === 0));
   
   const [salesPersons, setSalesPersons] = useState<UserDocument[]>([]);
+  const [allUsers, setAllUsers] = useState<UserDocument[]>([]);
+  const [allEmployees, setAllEmployees] = useState<UserDocument[]>([]);
+  const [proposals, setProposals] = useState<ProposalDocument[]>([]);
+  const [isAddClientOpen, setIsAddClientOpen] = useState(false);
   
   // Filters
     const [sortConfig, setSortConfig] = useState<{ key: string, direction: 'asc' | 'desc' } | null>(null);
@@ -124,7 +134,6 @@ export default function ClientsTab({ currentEmail, currentRole }: ClientsTabProp
   const [newHistoryEffectiveFrom, setNewHistoryEffectiveFrom] = useState<string>(() => new Date().toISOString().split('T')[0]);
   const [newHistoryReason, setNewHistoryReason] = useState<string>('');
   const [isSavingTierHistory, setIsSavingTierHistory] = useState<boolean>(false);
-  const [isSaving, setIsSaving] = useState(false);
   const [deleting, setDeleting] = useState(false);
 
   // Delete & Wipe Modal State
@@ -222,71 +231,7 @@ export default function ClientsTab({ currentEmail, currentRole }: ClientsTabProp
     }
   };
 
-  const handleSaveClient = async () => {
-    if (!editingClient || !editingClient.id) return;
-    setIsSaving(true);
-    setErrorMsg(null);
-    try {
-      const clientRef = doc(db, COLLECTIONS.CLIENTS, editingClient.id);
-      const originalClient = clients.find(c => c.id === editingClient.id);
-      
-      const nowIso = new Date().toISOString();
-      let updatedHistory = Array.isArray(editingClient.pricingCategoryHistory)
-        ? [...editingClient.pricingCategoryHistory]
-        : [];
 
-      // If category was changed directly in edit modal, track it in history
-      if (originalClient && editingClient.pricingCategory !== originalClient.pricingCategory && editingClient.pricingCategory !== 'Nil') {
-        updatedHistory = updatedHistory.map(h => {
-          if (!h.effectiveTo) {
-            return { ...h, effectiveTo: nowIso };
-          }
-          return h;
-        });
-        updatedHistory.push({
-          category: editingClient.pricingCategory || 'Nil',
-          effectiveFrom: nowIso,
-          effectiveTo: null,
-          updatedBy: currentEmail,
-          updatedAt: nowIso,
-          reason: 'Direct client edit update'
-        });
-      }
-
-      const updateData: Record<string, any> = {
-        companyName: editingClient.companyName || '',
-        contactPerson: editingClient.contactPerson || '',
-        email: editingClient.email || '',
-        phone: editingClient.phone || '',
-        city: editingClient.city || '',
-        gstin: editingClient.gstin || '',
-        pricingCategory: editingClient.pricingCategory || 'Nil',
-        submittedBy: editingClient.submittedBy || '',
-        [CLIENT_FIELDS.SALES_PERSON_EMAIL]: editingClient.salesPersonEmail || editingClient.submittedBy || '',
-        proposalNumber: editingClient.proposalNumber || '',
-        status: editingClient.status || CLIENT_STATUS.PENDING,
-        pricingCategoryHistory: updatedHistory
-      };
-
-      if (editingClient.commercialModel) {
-        updateData.commercialModel = editingClient.commercialModel;
-      }
-      if (editingClient.subscriptionPlan) {
-        updateData.subscriptionPlan = editingClient.subscriptionPlan;
-      }
-      
-      await updateDoc(clientRef, updateData);
-      setSuccessMsg('Client updated successfully.');
-      setEditingClient(null);
-      await loadClientsAndUsers();
-      setTimeout(() => setSuccessMsg(null), 4000);
-    } catch (err) {
-      console.error('Error updating client:', err);
-      setErrorMsg('Failed to update client.');
-    } finally {
-      setIsSaving(false);
-    }
-  };
 
   const handleDelete = (id?: string, collectionName: string = COLLECTIONS.CLIENTS, label?: string) => {
     if (!id) {
@@ -474,36 +419,79 @@ export default function ClientsTab({ currentEmail, currentRole }: ClientsTabProp
   };
 
   const loadClientsAndUsers = useCallback(async () => {
-    setLoading(true);
-    setErrorMsg(null);
     try {
-      const q = query(
-        collection(db, COLLECTIONS.CLIENTS),
-        orderBy(CLIENT_FIELDS.CREATED_AT, 'desc')
-      );
-      const snap = await getDocs(q);
-      const list: ClientDocument[] = [];
-      snap.forEach((docSnap) => {
-        list.push({ ...(docSnap.data() as ClientDocument), id: docSnap.id });
-      });
-      setClients(list);
-      setCachedClients(list);
-      try {
-        localStorage.setItem('clients', JSON.stringify(list));
-      } catch (e) {
-        console.warn('Could not cache clients in localStorage', e);
+      const [clientSnap, userSnap, empSnap, propSnap] = await Promise.all([
+        getDocs(query(collection(db, COLLECTIONS.CLIENTS), orderBy(CLIENT_FIELDS.CREATED_AT, 'desc'))).catch(() => null),
+        getDocs(collection(db, COLLECTIONS.USERS)).catch(() => null),
+        getDocs(collection(db, COLLECTIONS.EMPLOYEES || 'employees')).catch(() => null),
+        getDocs(collection(db, COLLECTIONS.PROPOSALS)).catch(() => null)
+      ]);
+
+      if (clientSnap) {
+        const list: ClientDocument[] = [];
+        clientSnap.forEach((docSnap) => {
+          list.push({ ...(docSnap.data() as ClientDocument), id: docSnap.id });
+        });
+        setClients(list);
+        setCachedClients(list);
+        try {
+          localStorage.setItem('clients', JSON.stringify(list));
+        } catch (e) {
+          console.warn('Could not cache clients in localStorage', e);
+        }
       }
       
-      const userQ = query(collection(db, COLLECTIONS.USERS));
-      const userSnap = await getDocs(userQ);
       const usersList: UserDocument[] = [];
-      userSnap.forEach((uSnap) => {
-        usersList.push({ ...(uSnap.data() as UserDocument), id: uSnap.id });
+      if (userSnap) {
+        userSnap.forEach((uSnap) => {
+          usersList.push({ ...(uSnap.data() as UserDocument), id: uSnap.id });
+        });
+        setAllUsers(usersList);
+      }
+
+      const empList: UserDocument[] = [];
+      if (empSnap) {
+        empSnap.forEach((eSnap) => {
+          empList.push({ ...(eSnap.data() as UserDocument), id: eSnap.id });
+        });
+        setAllEmployees(empList);
+      }
+
+      const propList: ProposalDocument[] = [];
+      if (propSnap) {
+        propSnap.forEach((pSnap) => {
+          propList.push({ ...(pSnap.data() as ProposalDocument), id: pSnap.id });
+        });
+        setProposals(propList);
+      }
+
+      // Broad sales person filter across both collections:
+      // Includes anyone with sales attribution, admin, or owner role
+      const combinedPool = [...usersList, ...empList];
+      const uniqueMap = new Map<string, UserDocument>();
+      combinedPool.forEach(u => {
+        const email = (u.email || (u as any).officialEmail || '').trim().toLowerCase();
+        if (email && !uniqueMap.has(email)) {
+          uniqueMap.set(email, u);
+        }
       });
-      const salesReps = usersList.filter(user => {
-        const role = String(user.department || user.role || (user as any).assignedRole || '').toLowerCase().trim();
-        return ['sales', 'owner', 'admin', 'super_admin'].includes(role);
+
+      const salesReps = Array.from(uniqueMap.values()).filter((u: any) => {
+        const role = String(u.role || '').toLowerCase();
+        const dept = String(u.department || '').toLowerCase();
+        const desig = String(u.designation || '').toLowerCase();
+        return (
+          role.includes('sales') ||
+          dept.includes('sales') ||
+          desig.includes('sales') ||
+          role === 'owner' ||
+          role === 'admin' ||
+          role === 'super_admin' ||
+          role === 'management' ||
+          role.includes('lead')
+        );
       });
+
       setSalesPersons(salesReps);
     } catch (err) {
       console.error('Error loading data:', err);
@@ -516,11 +504,11 @@ export default function ClientsTab({ currentEmail, currentRole }: ClientsTabProp
 
   useEffect(() => {
     if (!canManageClients) return;
-    if (cachedClients && cachedClients.length > 0) {
-      return;
-    }
-    loadClientsAndUsers();
-  }, [canManageClients, cachedClients, loadClientsAndUsers]);
+    const fetchInit = async () => {
+      await loadClientsAndUsers();
+    };
+    void fetchInit();
+  }, [canManageClients, loadClientsAndUsers]);
 
   
   const countCatMatches = clients.filter(c => (c.pricingCategory || 'Nil') === catFrom).length;
@@ -860,6 +848,17 @@ const getStatusBadge = (status: string) => {
             onChange={handleImportClients}
           />
 
+          <button
+            onClick={() => {
+              setEditingClient(null);
+              setIsAddClientOpen(true);
+            }}
+            className="px-4 py-2 bg-gradient-to-r from-[#B38728] via-[#D4AF37] to-[#AA771C] text-black font-bold text-sm rounded-lg hover:brightness-110 transition-all flex items-center gap-1.5 shadow-lg cursor-pointer"
+          >
+            <Plus className="w-4 h-4" />
+            Add Client
+          </button>
+
           <button 
             onClick={sweepOrphanedClients} 
             className="px-3.5 py-2 bg-yellow-500/20 hover:bg-yellow-500/30 border border-yellow-500/50 text-yellow-500 rounded-lg text-sm font-medium transition-all cursor-pointer"
@@ -868,7 +867,10 @@ const getStatusBadge = (status: string) => {
           </button>
 
           <button
-            onClick={loadClientsAndUsers}
+            onClick={() => {
+              setLoading(true);
+              loadClientsAndUsers();
+            }}
             disabled={loading}
             className="px-3.5 py-2 bg-[#2A2A2A] hover:bg-[#333333] border border-[#2A2A2A] hover:border-[#D4AF37]/50 rounded-lg text-sm font-medium text-gray-200 transition-all flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
           >
@@ -1109,7 +1111,23 @@ const getStatusBadge = (status: string) => {
                     <td className="p-4">
                       <div className="flex flex-col gap-1">
                         <span className="text-sm text-gray-400">Propsl: <span className="text-gray-200">{client.proposalNumber || '-'}</span></span>
-                        <span className="text-xs text-gray-500">Date: {new Date(client.createdAt).toLocaleDateString()}</span>
+                        {(() => {
+                          const rawDate = client.proposalDate || (client as any).proposalCreatedAt || client.updatedAt;
+                          let formattedDate = '—';
+                          if (rawDate) {
+                            const d = (rawDate as any)?.toDate 
+                              ? (rawDate as any).toDate() 
+                              : ((rawDate as any)?.seconds 
+                                ? new Date((rawDate as any).seconds * 1000) 
+                                : new Date(rawDate as any));
+                            if (!isNaN(d.getTime())) {
+                              formattedDate = `${d.getDate().toString().padStart(2, '0')}/${(d.getMonth() + 1).toString().padStart(2, '0')}/${d.getFullYear()}`;
+                            }
+                          }
+                          return formattedDate !== '—' ? (
+                            <span className="text-xs text-gray-500">Date: {formattedDate}</span>
+                          ) : null;
+                        })()}
                       </div>
                     </td>
                     <td className="p-4">
@@ -1424,7 +1442,14 @@ const getStatusBadge = (status: string) => {
               </div>
               <div className="md:col-span-2">
                 <p className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-1">Created At</p>
-                <p className="text-base text-gray-400">{new Date(viewingClient.createdAt).toLocaleString()}</p>
+                <p className="text-base text-gray-400">
+                  {(() => {
+                    const raw = viewingClient.createdAt;
+                    if (!raw) return '—';
+                    const d = (raw as any)?.toDate ? (raw as any).toDate() : ((raw as any)?.seconds ? new Date((raw as any).seconds * 1000) : new Date(raw as any));
+                    return !isNaN(d.getTime()) ? d.toLocaleString() : '—';
+                  })()}
+                </p>
               </div>
             </div>
             
@@ -1452,193 +1477,43 @@ const getStatusBadge = (status: string) => {
         </div>
       )}
 
-      {/* Edit Client Modal */}
-      {editingClient && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-4">
-          <div className="w-full max-w-3xl bg-[#1E1E1E] border border-[#333333] rounded-xl p-6 md:p-8 shadow-2xl relative max-h-[90vh] overflow-y-auto">
-            <div className="flex items-center justify-between pb-4 border-b border-[#2A2A2A] mb-5">
-              <h3 className="text-xl font-bold text-white flex items-center gap-2">
-                <Pencil className="w-5 h-5 text-[#D4AF37]" />
-                Edit Client
-              </h3>
-              <button
-                onClick={() => setEditingClient(null)}
-                className="text-gray-400 hover:text-white p-1 rounded-lg hover:bg-[#2A2A2A] cursor-pointer transition-colors"
-              >
-                <X className="w-6 h-6" />
-              </button>
-            </div>
-            
-            <div className="w-full grid grid-cols-1 md:grid-cols-2 gap-4">
-              <div className="space-y-1.5">
-                <label className="text-xs font-semibold text-gray-400 uppercase tracking-wider pl-1">Company Name *</label>
-                <input
-                  type="text"
-                  value={editingClient.companyName}
-                  onChange={(e) => setEditingClient({...editingClient, companyName: e.target.value})}
-                  className="w-full px-3 py-2 bg-[#2A2A2A] border border-[#2A2A2A] focus:border-[#D4AF37] rounded-xl text-sm text-white focus:outline-none transition-all"
-                />
-              </div>
-              <div className="space-y-1.5">
-                <label className="text-xs font-semibold text-gray-400 uppercase tracking-wider pl-1">Contact Person *</label>
-                <input
-                  type="text"
-                  value={editingClient.contactPerson}
-                  onChange={(e) => setEditingClient({...editingClient, contactPerson: e.target.value})}
-                  className="w-full px-3 py-2 bg-[#2A2A2A] border border-[#2A2A2A] focus:border-[#D4AF37] rounded-xl text-sm text-white focus:outline-none transition-all"
-                />
-              </div>
-              <div className="space-y-1.5">
-                <label className="text-xs font-semibold text-gray-400 uppercase tracking-wider pl-1">Email</label>
-                <input
-                  type="email"
-                  value={editingClient.email || ''}
-                  onChange={(e) => setEditingClient({...editingClient, email: e.target.value})}
-                  className="w-full px-3 py-2 bg-[#2A2A2A] border border-[#2A2A2A] focus:border-[#D4AF37] rounded-xl text-sm text-white focus:outline-none transition-all"
-                />
-              </div>
-              <div className="space-y-1.5">
-                <label className="text-xs font-semibold text-gray-400 uppercase tracking-wider pl-1">Phone</label>
-                <input
-                  type="text"
-                  value={editingClient.phone || ''}
-                  onChange={(e) => setEditingClient({...editingClient, phone: e.target.value})}
-                  className="w-full px-3 py-2 bg-[#2A2A2A] border border-[#2A2A2A] focus:border-[#D4AF37] rounded-xl text-sm text-white focus:outline-none transition-all"
-                />
-              </div>
-              <div className="space-y-1.5">
-                <label className="text-xs font-semibold text-gray-400 uppercase tracking-wider pl-1">City *</label>
-                <input
-                  type="text"
-                  value={editingClient.city}
-                  onChange={(e) => setEditingClient({...editingClient, city: e.target.value})}
-                  className="w-full px-3 py-2 bg-[#2A2A2A] border border-[#2A2A2A] focus:border-[#D4AF37] rounded-xl text-sm text-white focus:outline-none transition-all"
-                />
-              </div>
-              <div className="space-y-1.5">
-                <label className="text-xs font-semibold text-gray-400 uppercase tracking-wider pl-1">GSTIN</label>
-                <input
-                  type="text"
-                  value={editingClient.gstin || ''}
-                  onChange={(e) => setEditingClient({...editingClient, gstin: e.target.value})}
-                  className="w-full px-3 py-2 bg-[#2A2A2A] border border-[#2A2A2A] focus:border-[#D4AF37] rounded-xl text-sm text-white focus:outline-none transition-all"
-                />
-              </div>
-              <div className="space-y-1.5">
-                <label className="text-xs font-semibold text-gray-400 uppercase tracking-wider pl-1">Pricing Category</label>
-                <select
-                  value={editingClient.pricingCategory || 'Nil'}
-                  onChange={(e) => setEditingClient({...editingClient, pricingCategory: e.target.value})}
-                  className="w-full px-3 py-2 bg-[#2A2A2A] border border-[#2A2A2A] focus:border-[#D4AF37] rounded-lg text-sm text-white focus:outline-none transition-all cursor-pointer"
-                >
-                  <option value="Nil">Nil (Unassigned)</option>
-                  {pricingCategories.filter(c => c !== 'Nil').map(cat => (
-                    <option key={cat} value={cat}>{cat}</option>
-                  ))}
-                </select>
-              </div>
-              <div className="space-y-1.5">
-                <label className="text-xs font-semibold text-gray-400 uppercase tracking-wider pl-1">Sales Person *</label>
-                <select
-                  value={editingClient.salesPersonEmail || editingClient.submittedBy || ''}
-                  onChange={(e) => setEditingClient({...editingClient, salesPersonEmail: e.target.value, submittedBy: e.target.value})}
-                  className="w-full px-3 py-2 bg-[#2A2A2A] border border-[#2A2A2A] focus:border-[#D4AF37] rounded-lg text-sm text-white focus:outline-none transition-all cursor-pointer"
-                >
-                  <option value="">Select Sales Person...</option>
-                  {salesPersons.map(sp => (
-                    <option key={sp.id} value={sp.email}>{sp.name} ({sp.email})</option>
-                  ))}
-                </select>
-              </div>
-              <div className="space-y-1.5">
-                <label className="text-xs font-semibold text-gray-400 uppercase tracking-wider pl-1">Proposal Number</label>
-                <input
-                  type="text"
-                  value={editingClient.proposalNumber || ''}
-                  onChange={(e) => setEditingClient({...editingClient, proposalNumber: e.target.value})}
-                  className="w-full px-3 py-2 bg-[#2A2A2A] border border-[#2A2A2A] focus:border-[#D4AF37] rounded-xl text-sm text-white focus:outline-none transition-all"
-                />
-              </div>
-              <div className="space-y-1.5">
-                <label className="text-xs font-semibold text-gray-400 uppercase tracking-wider pl-1">Status</label>
-                <select
-                  value={editingClient.status}
-                  onChange={(e) => setEditingClient({...editingClient, status: e.target.value as any})}
-                  className="w-full px-3 py-2 bg-[#2A2A2A] border border-[#2A2A2A] focus:border-[#D4AF37] rounded-lg text-sm text-white focus:outline-none transition-all cursor-pointer"
-                >
-                  <option value="approved">Approved</option>
-                  <option value="pending_approval">Pending Approval</option>
-                  <option value="rejected">Rejected</option>
-                </select>
-              </div>
-              <div className="space-y-1.5 md:col-span-2">
-                <label className="text-xs font-semibold text-gray-400 uppercase tracking-wider pl-1">Commercial Model</label>
-                <select
-                  value={editingClient.commercialModel || 'PER_KW'}
-                  onChange={(e) => setEditingClient({...editingClient, commercialModel: e.target.value as CommercialModel})}
-                  className="w-full px-3 py-2 bg-[#2A2A2A] border border-[#2A2A2A] focus:border-[#D4AF37] rounded-lg text-sm text-white focus:outline-none transition-all cursor-pointer font-mono"
-                >
-                  <option value="PER_KW">Standard Per kW Slabs</option>
-                  <option value="FIXED_PACKAGE">Fixed Package Retainer Plan</option>
-                </select>
-              </div>
-            </div>
-
-            <div className="pt-6 mt-6 border-t border-[#2A2A2A] flex items-center justify-between gap-3">
-              <div className="flex items-center gap-3">
-                <button
-                  type="button"
-                  onClick={() => {
-                    const idToDelete = editingClient.id;
-                    const name = editingClient.companyName;
-                    setEditingClient(null);
-                    if (idToDelete) handleDelete(idToDelete, 'clients', name);
-                  }}
-                  className="px-4 py-2.5 bg-rose-500/10 hover:bg-rose-500/20 border border-rose-500/30 hover:border-rose-400 text-rose-400 rounded-lg text-sm font-semibold cursor-pointer transition-colors flex items-center gap-1.5"
-                  title="Permanently Delete Client"
-                >
-                  <Trash2 className="w-3.5 h-3.5" />
-                  Delete Record
-                </button>
-                <button
-                  type="button"
-                  onClick={() => {
-                    const c = editingClient;
-                    setEditingClient(null);
-                    openTierHistory(c);
-                  }}
-                  className="px-3.5 py-2.5 bg-[#2A2A2A] hover:bg-[#333333] border border-[#D4AF37]/30 text-[#D4AF37] rounded-lg text-xs font-semibold cursor-pointer transition-colors flex items-center gap-1.5 font-mono"
-                >
-                  <Clock className="w-3.5 h-3.5" />
-                  Tier History ({editingClient.pricingCategoryHistory?.length || 1})
-                </button>
-              </div>
-              <div className="flex items-center gap-3">
-                <button
-                  onClick={() => setEditingClient(null)}
-                  className="px-5 py-2.5 bg-[#2A2A2A] hover:bg-[#2A2A2A] border border-[#333333] rounded-lg text-sm font-semibold text-gray-200 cursor-pointer transition-colors"
-                >
-                  Cancel
-                </button>
-                <button
-                  onClick={handleSaveClient}
-                  disabled={isSaving || !editingClient.companyName || !editingClient.contactPerson || !editingClient.city || !editingClient.submittedBy}
-                  className="px-6 py-2.5 bg-[#D4AF37] hover:bg-[#B3932F] text-black font-bold text-sm rounded-lg cursor-pointer disabled:opacity-50 transition-all flex items-center gap-2"
-                >
-                  {isSaving ? (
-                    <>
-                      <div className="w-3.5 h-3.5 border-2 border-black/30 border-t-black rounded-full animate-spin" />
-                      Saving...
-                    </>
-                  ) : (
-                    'Save Changes'
-                  )}
-                </button>
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
+      {/* Add / Edit Client Modal via ClientModal component */}
+      <ClientModal
+        isOpen={Boolean(editingClient || isAddClientOpen)}
+        onClose={() => {
+          setEditingClient(null);
+          setIsAddClientOpen(false);
+        }}
+        client={editingClient}
+        onSaveSuccess={(savedClient) => {
+          setClients(prev => {
+            const idx = prev.findIndex(c => c.id === savedClient.id);
+            return idx >= 0
+              ? prev.map(c => c.id === savedClient.id ? savedClient : c)
+              : [savedClient, ...prev];
+          });
+          setSuccessMsg(editingClient ? `Client "${savedClient.companyName}" updated successfully.` : `Client "${savedClient.companyName}" registered successfully.`);
+          setTimeout(() => setSuccessMsg(null), 4000);
+          setEditingClient(null);
+          setIsAddClientOpen(false);
+          loadClientsAndUsers();
+        }}
+        onDeleteRequest={(clientId, clientName) => {
+          setEditingClient(null);
+          setIsAddClientOpen(false);
+          handleDelete(clientId, 'clients', clientName);
+        }}
+        onOpenTierHistory={(c) => {
+          setEditingClient(null);
+          setIsAddClientOpen(false);
+          openTierHistory(c);
+        }}
+        users={allUsers}
+        employees={allEmployees}
+        proposals={proposals}
+        pricingCategories={pricingCategories}
+        currentEmail={currentEmail}
+      />
 
       {/* Custom Delete Confirmation Modal */}
       <ConfirmModal
@@ -1761,7 +1636,7 @@ const getStatusBadge = (status: string) => {
                         >
                           <div className="space-y-1">
                             <div className="flex items-center gap-2">
-                              {getCategoryBadge(item.category)}
+                              {getCategoryBadge(item.category || item.tier || 'Nil')}
                               {isActive ? (
                                 <span className="px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 text-[10px] font-bold uppercase">
                                   Current Active

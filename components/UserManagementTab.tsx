@@ -389,67 +389,10 @@ export default function UserManagementTab({ currentEmail, currentRole }: UserMan
         empList.push({ ...(docSnap.data() as UserDocument), id: docSnap.id });
       });
 
-      const { mergedEmployees, duplicateDocIdsToPurge } = syncEmployeesAndUsers(userList, empList);
+      const { mergedEmployees } = syncEmployeesAndUsers(userList, empList);
 
       setUsers(mergedEmployees);
       setCachedEmployees(mergedEmployees);
-
-      // Background purge of stale duplicate documents and persistence of merged primary records in Firestore
-      if (duplicateDocIdsToPurge && duplicateDocIdsToPurge.size > 0) {
-        const masterIds = new Set(mergedEmployees.map(u => u.id));
-        for (const dupId of duplicateDocIdsToPurge) {
-          if (!masterIds.has(dupId)) {
-            deleteDoc(doc(db, COLLECTIONS.USERS, dupId)).catch(() => {});
-            deleteDoc(doc(db, COLLECTIONS.EMPLOYEES || 'employees', dupId)).catch(() => {});
-          }
-        }
-        const allRaw = [...userList, ...empList];
-        for (const d of allRaw) {
-          if (d.id && !masterIds.has(d.id)) {
-            const isKnown = mergedEmployees.some(emp => 
-              emp.id === d.id ||
-              emp.uid === d.id ||
-              (emp.employeeId && (emp.employeeId.toUpperCase() === (d.employeeId || '').toUpperCase())) ||
-              (emp.email && emp.email.toLowerCase() === (d.email || '').toLowerCase()) ||
-              (emp.personalEmail && emp.personalEmail.toLowerCase() === (d.email || '').toLowerCase())
-            );
-            if (!isKnown && (d.email || '').includes('@')) {
-              const isSuper = (d.email && (d.email.includes('jayjalpa') || d.email.includes('jay.solarithm')));
-              if (!isSuper) {
-                deleteDoc(doc(db, COLLECTIONS.USERS, d.id)).catch(() => {});
-                deleteDoc(doc(db, COLLECTIONS.EMPLOYEES || 'employees', d.id)).catch(() => {});
-              }
-            }
-          }
-        }
-        for (const emp of mergedEmployees) {
-          try {
-            const targetUid = emp.uid || emp.id;
-            const canonicalEmpId = (emp.employeeId || targetUid || '').toUpperCase();
-            if (targetUid) {
-              const sanitizedPayload = normalizeEmployeeProfilePayload({
-                ...emp,
-                id: targetUid,
-                uid: targetUid,
-                authUid: targetUid,
-                employeeId: canonicalEmpId,
-                updatedAt: new Date().toISOString()
-              });
-              await safeSetDoc(doc(db, COLLECTIONS.USERS, targetUid), sanitizedPayload, { merge: true });
-              if (canonicalEmpId) {
-                await safeSetDoc(doc(db, COLLECTIONS.EMPLOYEES || 'employees', canonicalEmpId), {
-                  ...sanitizedPayload,
-                  id: canonicalEmpId,
-                  authUid: targetUid,
-                  uid: targetUid
-                }, { merge: true });
-              }
-            }
-          } catch (syncErr) {
-            console.warn(`[Employee Directory] Background sync warning for ${emp.employeeId || emp.email || emp.name}:`, syncErr);
-          }
-        }
-      }
       try {
         if (typeof window !== 'undefined') {
           localStorage.setItem('employees', JSON.stringify(mergedEmployees));
@@ -502,44 +445,6 @@ export default function UserManagementTab({ currentEmail, currentRole }: UserMan
         if (isMounted) {
           setUsers(dedupedList);
           setCachedEmployees(dedupedList);
-
-          // Background purge of stale duplicate documents and persistence of merged primary records in Firestore
-          if (duplicateDocIdsToPurge && duplicateDocIdsToPurge.size > 0) {
-            const masterIds = new Set(dedupedList.map(u => u.id));
-            for (const dupId of duplicateDocIdsToPurge) {
-              if (!masterIds.has(dupId)) {
-                deleteDoc(doc(db, COLLECTIONS.USERS, dupId)).catch(() => {});
-                deleteDoc(doc(db, COLLECTIONS.EMPLOYEES || 'employees', dupId)).catch(() => {});
-              }
-            }
-            for (const emp of dedupedList) {
-              try {
-                const targetUid = emp.uid || emp.id;
-                const canonicalEmpId = (emp.employeeId || targetUid || '').toUpperCase();
-                if (targetUid) {
-                  const sanitizedPayload = normalizeEmployeeProfilePayload({
-                    ...emp,
-                    id: targetUid,
-                    uid: targetUid,
-                    authUid: targetUid,
-                    employeeId: canonicalEmpId,
-                    updatedAt: new Date().toISOString()
-                  });
-                  await safeSetDoc(doc(db, COLLECTIONS.USERS, targetUid), sanitizedPayload, { merge: true });
-                  if (canonicalEmpId) {
-                    await safeSetDoc(doc(db, COLLECTIONS.EMPLOYEES || 'employees', canonicalEmpId), {
-                      ...sanitizedPayload,
-                      id: canonicalEmpId,
-                      authUid: targetUid,
-                      uid: targetUid
-                    }, { merge: true });
-                  }
-                }
-              } catch (syncErr) {
-                console.warn(`[Employee Directory] Background sync warning for ${emp.employeeId || emp.email || emp.name}:`, syncErr);
-              }
-            }
-          }
           try {
             if (typeof window !== 'undefined') {
               localStorage.setItem('employees', JSON.stringify(dedupedList));
@@ -1617,7 +1522,7 @@ export default function UserManagementTab({ currentEmail, currentRole }: UserMan
             title="Scan existing records for duplicates (by ID, PAN, Email, Name) and merge into single primary documents"
           >
             <Sparkles className={`w-3.5 h-3.5 text-amber-400 ${sweeping ? 'animate-spin' : ''}`} />
-            {sweeping ? 'Deduplicating...' : 'Deduplicate Directory'}
+            {sweeping ? 'Cleaning...' : 'Clean Duplicate Records'}
           </button>
 
           <button
@@ -2763,7 +2668,11 @@ export default function UserManagementTab({ currentEmail, currentRole }: UserMan
                 <button
                   type="button"
                   onClick={() => {
-                    window.print();
+                    try {
+                      window.print();
+                    } catch (printErr) {
+                      console.warn('Sandbox print guard caught SecurityError:', printErr);
+                    }
                   }}
                   className="px-5 py-2 bg-gradient-to-r from-[#B38728] via-[#D4AF37] to-[#AA771C] text-black font-semibold text-xs rounded-lg hover:brightness-110 flex items-center gap-1.5 shadow-md shadow-[#D4AF37]/10 cursor-pointer"
                 >

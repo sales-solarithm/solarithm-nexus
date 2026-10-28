@@ -45,9 +45,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     try {
       const cleanEmail = currentUser.email.trim().toLowerCase();
       const isOwner = isOwnerEmail(cleanEmail) || cleanEmail === 'jayjalpa2002@gmail.com' || currentUser.uid === 'oIZpuLeftqaj3j5KS9ZIvurklEE2';
-      if (cleanEmail === 'jayjalpa2002@gmail.com' || currentUser.uid === 'oIZpuLeftqaj3j5KS9ZIvurklEE2') {
-        await ensureOwnerDocumentExists().catch((e) => console.warn('Ensure owner document notice:', e));
-      }
       const profile = await syncUserDocumentOnLogin({
         uid: currentUser.uid,
         email: cleanEmail,
@@ -69,11 +66,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   useEffect(() => {
-    // Proactively verify canonical owner user document in /users
-    ensureOwnerDocumentExists().catch((err) => {
-      console.warn('Initial owner check caught:', err);
-    });
-
     const unsubscribe = onAuthStateChanged(
       auth,
       async (firebaseUser) => {

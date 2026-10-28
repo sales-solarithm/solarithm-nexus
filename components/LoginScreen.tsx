@@ -199,104 +199,12 @@ export default function LoginScreen({ onLoginSuccess, initialError }: LoginScree
     setVerifyingClearance(false);
     setErrorMsg(null);
 
-    let authTargetEmail = inputEmail;
-    let matchedDocData: UserDocument | null = null;
-
-    // 1. Dual-Email Alias Resolution before calling Firebase Auth:
-    // Check Firestore /users and /employees to see if this email is an alias for an owner/executive
-    try {
-      // Query by official email in /users
-      let userQuery = query(collection(db, COLLECTIONS.USERS), where('email', '==', inputEmail));
-      let userSnap = await getDocs(userQuery);
-
-      // Query by personal email if not found
-      if (userSnap.empty) {
-        userQuery = query(collection(db, COLLECTIONS.USERS), where('personalEmail', '==', inputEmail));
-        userSnap = await getDocs(userQuery);
-      }
-      if (userSnap.empty) {
-        userQuery = query(collection(db, COLLECTIONS.USERS), where('personalEmailAddress', '==', inputEmail));
-        userSnap = await getDocs(userQuery);
-      }
-
-      // Fallback to /employees collection
-      if (userSnap.empty) {
-        const empQuery = query(collection(db, COLLECTIONS.EMPLOYEES || 'employees'), where('email', '==', inputEmail));
-        const empSnap = await getDocs(empQuery);
-        if (!empSnap.empty) {
-          userSnap = empSnap;
-        } else {
-          const empPersonalQuery = query(collection(db, COLLECTIONS.EMPLOYEES || 'employees'), where('personalEmail', '==', inputEmail));
-          const empPersonalSnap = await getDocs(empPersonalQuery);
-          if (!empPersonalSnap.empty) userSnap = empPersonalSnap;
-        }
-      }
-
-      if (!userSnap.empty) {
-        const matchedData = userSnap.docs[0].data() as UserDocument;
-        matchedDocData = matchedData;
-        if ((matchedData as any).authEmail) {
-          authTargetEmail = (matchedData as any).authEmail.trim().toLowerCase();
-        } else if ((matchedData.personalEmail || matchedData.personalEmailAddress) && inputEmail.includes('@solarithmdesign.com')) {
-          authTargetEmail = (matchedData.personalEmail || matchedData.personalEmailAddress || '').trim().toLowerCase();
-        } else if (matchedData.email && !inputEmail.includes('@solarithmdesign.com')) {
-          authTargetEmail = (matchedData.email || (matchedData as any).officialEmail || '').trim().toLowerCase();
-        }
-      }
-    } catch (lookupErr) {
-      console.warn('Pre-auth alias lookup warning:', lookupErr);
-    }
-
-    // Direct fallback if offline or cold start
-    if (authTargetEmail === inputEmail) {
-      if (inputEmail.includes('deepdavara')) {
-        authTargetEmail = inputEmail.endsWith('@solarithmdesign.com') ? 'deepdavara@gmail.com' : 'deepdavara.23@solarithmdesign.com';
-      } else if (inputEmail.includes('jayjalpa') || inputEmail.includes('jayshah')) {
-        authTargetEmail = inputEmail.includes('solarithmdesign') ? 'jayjalpa2002@gmail.com' : 'jayshah.03@solarithmdesign.com';
-      }
-    }
-
-    // Build comprehensive candidate email list for authentication
-    const candidateAuthEmails: string[] = [inputEmail];
-
-    if (matchedDocData) {
-      const dAuth = ((matchedDocData as any).authEmail || '').trim().toLowerCase();
-      const dPersonal = (matchedDocData.personalEmail || matchedDocData.personalEmailAddress || '').trim().toLowerCase();
-      const dEmail = (matchedDocData.email || (matchedDocData as any).officialEmail || '').trim().toLowerCase();
-      if (dAuth && !candidateAuthEmails.includes(dAuth)) candidateAuthEmails.push(dAuth);
-      if (dPersonal && !candidateAuthEmails.includes(dPersonal)) candidateAuthEmails.push(dPersonal);
-      if (dEmail && !candidateAuthEmails.includes(dEmail)) candidateAuthEmails.push(dEmail);
-    }
-
-    if (authTargetEmail && !candidateAuthEmails.includes(authTargetEmail)) {
-      candidateAuthEmails.push(authTargetEmail);
-    }
-
-    // Known partner pools for Deep Davara & Jay Shah
-    if (inputEmail.includes('deepdavara')) {
-      const deepPool = [
-        'deepdavara@gmail.com',
-        'deepdavara23@gmail.com',
-        'deepdavara.23@solarithmdesign.com',
-        'deepdavara@solarithmdesign.com'
-      ];
-      for (const cand of deepPool) {
-        if (!candidateAuthEmails.includes(cand)) candidateAuthEmails.push(cand);
-      }
-    } else if (inputEmail.includes('jayshah') || inputEmail.includes('jayjalpa')) {
-      const jayPool = [
-        'jayjalpa2002@gmail.com',
-        'jayshah.03@solarithmdesign.com',
-        'jayshah@solarithmdesign.com',
-        'jay.solarithm@gmail.com'
-      ];
-      for (const cand of jayPool) {
-        if (!candidateAuthEmails.includes(cand)) candidateAuthEmails.push(cand);
-      }
-    }
+    // 1. Resolve canonical email once via lookupEmployeeDirectoryAuthEmail()
+    const { canonicalAuthEmail, docData: matchedDocData } = await lookupEmployeeDirectoryAuthEmail(inputEmail);
+    const authTargetEmail = canonicalAuthEmail || inputEmail;
 
     let firebaseUser: any = null;
-    let authSuccessEmail = inputEmail;
+    let authSuccessEmail = authTargetEmail;
 
     try {
       // In-memory persistence
@@ -306,36 +214,10 @@ export default function LoginScreen({ onLoginSuccess, initialError }: LoginScree
         console.warn('Could not set inMemoryPersistence:', pErr);
       }
 
-      // 2. Execute Resilient Multi-Candidate Authentication with Sequential Fallbacks
-      let lastAuthError: any = null;
-
-      for (const candidate of candidateAuthEmails) {
-        try {
-          const userCredential = await signInWithEmailAndPassword(auth, candidate, password);
-          firebaseUser = userCredential.user;
-          authSuccessEmail = candidate;
-          break;
-        } catch (candErr: any) {
-          lastAuthError = candErr;
-          const code = candErr?.code || '';
-          if (
-            code === 'auth/invalid-credential' ||
-            code === 'auth/invalid-login-credentials' ||
-            code === 'auth/user-not-found' ||
-            code === 'auth/wrong-password'
-          ) {
-            // Try next candidate alias
-            continue;
-          } else {
-            // Rethrow non-credential errors immediately (e.g. network failure)
-            throw candErr;
-          }
-        }
-      }
-
-      if (!firebaseUser || !firebaseUser.email) {
-        throw lastAuthError || new Error('Authentication returned an invalid user profile.');
-      }
+      // Single sign-in call
+      const userCredential = await signInWithEmailAndPassword(auth, authTargetEmail, password);
+      firebaseUser = userCredential.user;
+      authSuccessEmail = firebaseUser.email || authTargetEmail;
 
       // 3. Trigger Clearance Verification
       setVerifyingClearance(true);

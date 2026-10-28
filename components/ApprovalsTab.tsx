@@ -727,9 +727,17 @@ export default function ApprovalsTab({ currentEmail, currentRole }: ApprovalsTab
         // Fetch any un-cached projects in background without blocking UI
         fetchMissingProjects(rawList);
       },
-      (error) => {
-        console.warn('Snapshot listener caught:', error);
+      (error: any) => {
+        console.warn('Change requests snapshot error:', error);
         setLoadingChangeRequests(false);
+        const code = error?.code || '';
+        if (code === 'resource-exhausted' || code.includes('resource-exhausted')) {
+          setErrorMsg('Firestore quota exceeded. System is operating in cached read-only mode.');
+        } else if (code === 'permission-denied' || code.includes('permission-denied')) {
+          setErrorMsg('Permission denied accessing change requests. Please verify administrator credentials.');
+        } else {
+          setErrorMsg(error?.message || 'Failed to sync change requests.');
+        }
       }
     );
 
@@ -1280,8 +1288,15 @@ export default function ApprovalsTab({ currentEmail, currentRole }: ApprovalsTab
       setTimeout(() => setSuccessMsg(null), 5000);
     } catch (err: any) {
       console.error('Error approving change request:', err);
-      handleFirestoreError(err, OperationType.UPDATE, `changeRequests/${request.id}`);
-      setErrorMsg(err?.message || 'Failed to approve change request.');
+      const errInfo = handleFirestoreError(err, OperationType.UPDATE, `changeRequests/${request.id}`);
+      const code = err?.code || '';
+      if (code === 'resource-exhausted' || code.includes('resource-exhausted')) {
+        setErrorMsg('Firestore write quota exceeded. Please wait a moment before approving change requests.');
+      } else if (code === 'permission-denied' || code.includes('permission-denied')) {
+        setErrorMsg('Permission denied. You do not have authorization to approve change requests on this project.');
+      } else {
+        setErrorMsg(errInfo?.error || err?.message || 'Failed to approve change request.');
+      }
     } finally {
       setActioningChangeId(null);
     }

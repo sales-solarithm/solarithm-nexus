@@ -41,6 +41,7 @@ import {
   deleteDoc, 
   writeBatch 
 } from 'firebase/firestore';
+import { sanitizeFirestorePayload } from '@/lib/firestoreSanitizer';
 
 interface ScopeOfWorkTabProps {
   currentEmail: string;
@@ -184,12 +185,12 @@ export default function ScopeOfWorkTab({ currentEmail, currentRole }: ScopeOfWor
         const exists = scopes.some((s) => s.name.toUpperCase() === item.name.toUpperCase());
         if (!exists) {
           const docRef = doc(collection(db, COLLECTIONS.SCOPES));
-          batch.set(docRef, {
+          batch.set(docRef, sanitizeFirestorePayload({
             name: item.name,
             hasSubServices: item.hasSubServices,
             subServices: item.subServices,
             createdAt: new Date().toISOString()
-          });
+          }));
         }
       }
       await batch.commit();
@@ -306,13 +307,13 @@ export default function ScopeOfWorkTab({ currentEmail, currentRole }: ScopeOfWor
       if (editingScopeId) {
         // Edit
         const scopeRef = doc(db, COLLECTIONS.SCOPES, editingScopeId);
-        await setDoc(scopeRef, payload, { merge: true });
+        await setDoc(scopeRef, sanitizeFirestorePayload(payload), { merge: true });
         setSuccessMsg(`Scope of Work "${nameTrimmed}" updated successfully.`);
       } else {
         // Add New with unique key upsert
         const uniqueKey = nameTrimmed.toLowerCase().replace(/[^a-z0-9]/g, '_');
         const newScopeRef = doc(db, COLLECTIONS.SCOPES, uniqueKey);
-        await setDoc(newScopeRef, payload, { merge: true });
+        await setDoc(newScopeRef, sanitizeFirestorePayload(payload), { merge: true });
         setSuccessMsg(`New Scope of Work "${nameTrimmed}" created.`);
       }
 
@@ -464,7 +465,7 @@ export default function ScopeOfWorkTab({ currentEmail, currentRole }: ScopeOfWor
           };
 
           // Strict upsert with setDoc and merge: true
-          await setDoc(doc(db, COLLECTIONS.SCOPES, uniqueKey), payload, { merge: true });
+          await setDoc(doc(db, COLLECTIONS.SCOPES, uniqueKey), sanitizeFirestorePayload(payload), { merge: true });
 
           const existingIndex = updatedScopes.findIndex(s => 
             s.id === uniqueKey || s.name.toLowerCase() === name.toLowerCase()
@@ -479,8 +480,12 @@ export default function ScopeOfWorkTab({ currentEmail, currentRole }: ScopeOfWor
         }
 
         setScopes(updatedScopes);
-        if (typeof window !== 'undefined') {
-          localStorage.setItem('scopes', JSON.stringify(updatedScopes));
+        try {
+          if (typeof window !== 'undefined') {
+            localStorage.setItem('scopes', JSON.stringify(updatedScopes));
+          }
+        } catch (e) {
+          console.warn('Could not update localStorage scopes cache', e);
         }
 
         setSuccessMsg(`Successfully imported and deduplicated ${count} scope record(s).`);

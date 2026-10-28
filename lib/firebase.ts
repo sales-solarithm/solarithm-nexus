@@ -243,9 +243,11 @@ export interface ProposalDocument {
 }
 
 export interface PricingCategoryHistoryEntry {
-  category: string;
+  category?: string;
+  tier?: string;
   effectiveFrom: string;
   effectiveTo?: string | null;
+  proposalNumber?: string;
   updatedBy?: string;
   updatedAt?: string;
   reason?: string;
@@ -273,9 +275,12 @@ export interface ClientDocument {
   email?: string;
   phone?: string;
   city: string;
+  address?: string;
+  billingAddress?: string;
   gstin?: string;
   submittedBy: string;
   salesPersonEmail?: string;
+  salesPerson?: string;
   originalSalesPersonEmail?: string; // Permanent acquiring sales rep (locked across renewal cycles)
   originalSalesEmail?: string; // backwards compatibility alias
   status: 'pending_approval' | 'approved' | 'rejected';
@@ -286,6 +291,9 @@ export interface ClientDocument {
   approvedAt?: string;
   approvedBy?: string;
   proposalNumber?: string;
+  proposalDate?: string;
+  proposalCreatedAt?: string;
+  updatedAt?: string;
   createdAt: string;
 }
 

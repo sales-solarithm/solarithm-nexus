@@ -30,9 +30,11 @@ export interface PackagePlanDocument {
 }
 
 export interface PricingCategoryHistoryEntry {
-  category: string;
-  effectiveFrom: string; // ISO date string
+  category?: string;
+  tier?: string;
+  effectiveFrom: string; // ISO date string or YYYY-MM-DD
   effectiveTo?: string | null; // ISO date string or null if currently active
+  proposalNumber?: string;
   updatedBy?: string;
   updatedAt?: string;
   reason?: string;
@@ -158,8 +160,11 @@ export const CLIENT_FIELDS = {
   EMAIL: 'email', 
   PHONE: 'phone', 
   CITY: 'city', 
+  ADDRESS: 'address',
+  BILLING_ADDRESS: 'billingAddress',
   GSTIN: 'gstin', 
   PRICING_CATEGORY: 'pricingCategory', 
+  SALES_PERSON: 'salesPerson',
   SALES_PERSON_EMAIL: 'salesPersonEmail', 
   ORIGINAL_SALES_PERSON_EMAIL: 'originalSalesPersonEmail',
   PROPOSAL_NUMBER: 'proposalNumber', 

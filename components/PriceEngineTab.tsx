@@ -672,6 +672,7 @@ export default function PriceEngineTab({ currentEmail, currentRole }: PriceEngin
   };
 
   // Save Matrix Handler
+  // Targeted Save Matrix Handler - writes only dirty / modified rules
   const handleSaveMatrix = async () => {
     setSavingRule(true);
     setErrorMsg(null);
@@ -680,48 +681,55 @@ export default function PriceEngineTab({ currentEmail, currentRole }: PriceEngin
     try {
       const batch = writeBatch(db);
 
-      // 1. Ensure all Categories exist (including active and any uncommitted manual ones)
-      const categoriesToCommit = Array.from(new Set([...manualCategories, selectedCategory]));
+      // 1. Commit Category only if newly added or manual
+      const categoriesToCommit = manualCategories.length > 0 
+        ? manualCategories 
+        : (!allRules.some(r => r.category === selectedCategory) ? [selectedCategory] : []);
       categoriesToCommit.forEach(cat => {
         const catRef = doc(db, COLLECTIONS.PRICING_CATEGORIES, cat);
         batch.set(catRef, { name: cat, updatedAt: new Date().toISOString() }, { merge: true });
       });
 
-      // 2. Ensure all Scopes exist
+      // 2. Commit Scope only if manual or if adding a new sub-service to scope
       const scopesToCommit = Array.from(new Set([...manualScopes, selectedScopeName]));
       for (const s of scopesToCommit) {
         if (!s) continue;
         const sId = s.toLowerCase().replace(/[^a-z0-9]/g, '_');
         const sRef = doc(db, COLLECTIONS.SCOPES, sId);
         
-        // We only append the active sub-service to the ACTIVE scope.
-        // For other manual scopes, we just ensure they exist.
         if (s === selectedScopeName) {
-          const scopeSnap = await getDocs(query(collection(db, COLLECTIONS.SCOPES), where('name', '==', s)));
+          const scopeSnap = await getDocs(query(collection(db, COLLECTIONS.SCOPES), where('name', '==', s))).catch(() => null);
           let currentSubServices: string[] = [];
-          if (!scopeSnap.empty) {
+          if (scopeSnap && !scopeSnap.empty) {
             currentSubServices = scopeSnap.docs[0].data().subServices || [];
           }
-          if (!currentSubServices.some(sub => sub.toLowerCase() === effectiveSubService.toLowerCase()) && effectiveSubService !== 'N/A') {
+          const hasSub = currentSubServices.some(sub => sub.toLowerCase() === effectiveSubService.toLowerCase());
+          if (!hasSub && effectiveSubService !== 'N/A') {
              currentSubServices.push(effectiveSubService);
+             batch.set(sRef, {
+               name: s,
+               hasSubServices: true,
+               subServices: currentSubServices,
+               updatedAt: new Date().toISOString()
+             }, { merge: true });
+          } else if (manualScopes.includes(s)) {
+            batch.set(sRef, {
+              name: s,
+              hasSubServices: true,
+              subServices: currentSubServices,
+              updatedAt: new Date().toISOString()
+            }, { merge: true });
           }
-          batch.set(sRef, {
-            name: s,
-            hasSubServices: true,
-            subServices: currentSubServices,
-            updatedAt: new Date().toISOString()
-          }, { merge: true });
-        } else {
+        } else if (manualScopes.includes(s)) {
           batch.set(sRef, { name: s, hasSubServices: true, updatedAt: new Date().toISOString() }, { merge: true });
         }
       }
 
-      // We clear manual arrays here so we don't keep rewriting them unnecessarily, but it's fine if they remain.
       setManualCategories([]);
       setManualScopes([]);
       setManualSubServices([]);
 
-      // 3. Register Pricing Rule
+      // 3. Register Pricing Rule - update only active document
       let targetDocId = existingDocId;
       if (!targetDocId) {
         targetDocId = `${selectedCategory}_${selectedScopeName}_${effectiveSubService}`.replace(/[^a-zA-Z0-9]/g, '_').toLowerCase();
@@ -748,7 +756,7 @@ export default function PriceEngineTab({ currentEmail, currentRole }: PriceEngin
       await batch.commit();
 
       setExistingDocId(targetDocId);
-      await fetchAllRules(); // Re-sync state from DB to persist manual additions
+      await fetchAllRules();
 
       setSuccessMsg(`Pricing matrix saved successfully for ${selectedCategory} > ${selectedScopeName} (${effectiveSubService}).`);
       setTimeout(() => setSuccessMsg(null), 4000);
@@ -761,7 +769,7 @@ export default function PriceEngineTab({ currentEmail, currentRole }: PriceEngin
     }
   };
 
-  // Global Save Commission Matrix Handler (Commits ALL slices in masterCommissionState for the active Role at once)
+  // Targeted Save Commission Matrix Handler - updates ONLY the currently active document
   const handleSaveCommissionMatrix = async () => {
     setSavingCommissionRule(true);
     setErrorMsg(null);
@@ -773,27 +781,22 @@ export default function PriceEngineTab({ currentEmail, currentRole }: PriceEngin
     try {
       const batch = writeBatch(db);
 
-      // 1. Ensure Scopes exist in 'scopes' collection
-      const roleMaster = masterCommissionState[roleKey] || {};
-      const allRoleScopes = Array.from(new Set([
-        ...manualCommissionScopes,
-        ...Object.keys(roleMaster),
-        selectedCommissionScopeName
-      ])).filter(Boolean);
-
-      for (const s of allRoleScopes) {
-        const sId = s.toLowerCase().replace(/[^a-z0-9]/g, '_');
+      // 1. Ensure active Scope exists in 'scopes' collection if modified or manual
+      if (selectedCommissionScopeName) {
+        const sId = selectedCommissionScopeName.toLowerCase().replace(/[^a-z0-9]/g, '_');
         const sRef = doc(db, COLLECTIONS.SCOPES, sId);
 
-        const subServicesInScope = Object.keys(roleMaster[s] || {});
-        if (s === selectedCommissionScopeName && currentEffectiveSubService !== 'N/A') {
-          if (!subServicesInScope.some(sub => sub.toLowerCase() === currentEffectiveSubService.toLowerCase())) {
-            subServicesInScope.push(currentEffectiveSubService);
-          }
+        const scopeSnap = await getDocs(query(collection(db, COLLECTIONS.SCOPES), where('name', '==', selectedCommissionScopeName))).catch(() => null);
+        let subServicesInScope: string[] = [];
+        if (scopeSnap && !scopeSnap.empty) {
+          subServicesInScope = scopeSnap.docs[0].data().subServices || [];
+        }
+        if (currentEffectiveSubService && currentEffectiveSubService !== 'N/A' && !subServicesInScope.some(sub => sub.toLowerCase() === currentEffectiveSubService.toLowerCase())) {
+          subServicesInScope.push(currentEffectiveSubService);
         }
 
         batch.set(sRef, {
-          name: s,
+          name: selectedCommissionScopeName,
           hasSubServices: true,
           subServices: subServicesInScope.filter(sub => sub !== 'N/A'),
           updatedAt: new Date().toISOString()
@@ -803,52 +806,37 @@ export default function PriceEngineTab({ currentEmail, currentRole }: PriceEngin
       setManualCommissionScopes([]);
       setManualCommissionSubServices([]);
 
-      // 2. Iterate through all Scopes and Sub-Services in masterState for active role and batch-save
-      let totalCombinations = 0;
-      let totalTiers = 0;
+      // 2. Update ONLY the currently active document:
+      const targetDocId = `${roleKey}_${selectedCommissionScopeName}_${currentEffectiveSubService}`.replace(/[^a-zA-Z0-9]/g, '_').toLowerCase();
+      const ruleRef = doc(db, COLLECTIONS.COMMISSION_RULES, targetDocId);
 
-      for (const scope of allRoleScopes) {
-        const subMap = roleMaster[scope] || { [currentEffectiveSubService]: currentCommissionRows };
-        const allSubs = Object.keys(subMap).length > 0 ? Object.keys(subMap) : [currentEffectiveSubService];
+      const enhancedCapacityRows = currentCommissionRows.map(row => ({
+        ...row,
+        role: roleKey,
+        scope: selectedCommissionScopeName,
+        subService: currentEffectiveSubService
+      }));
 
-        for (const subService of allSubs) {
-          const rows = subMap[subService] || (scope === selectedCommissionScopeName && subService === currentEffectiveSubService ? currentCommissionRows : DEFAULT_COMMISSION_ROWS);
-          if (!rows || rows.length === 0) continue;
+      const payload: CommissionRuleDocument = {
+        role: roleKey,
+        scope: selectedCommissionScopeName,
+        subService: currentEffectiveSubService,
+        maxCommission: numCap,
+        capacityRows: enhancedCapacityRows,
+        updatedAt: new Date().toISOString()
+      };
 
-          const targetDocId = `${roleKey}_${scope}_${subService}`.replace(/[^a-zA-Z0-9]/g, '_').toLowerCase();
-          const ruleRef = doc(db, COLLECTIONS.COMMISSION_RULES, targetDocId);
-
-          const enhancedCapacityRows = rows.map(row => ({
-            ...row,
-            role: roleKey,
-            scope,
-            subService
-          }));
-
-          const payload: CommissionRuleDocument = {
-            role: roleKey,
-            scope,
-            subService,
-            maxCommission: numCap,
-            capacityRows: enhancedCapacityRows,
-            updatedAt: new Date().toISOString()
-          };
-
-          batch.set(ruleRef, payload, { merge: true });
-          totalCombinations++;
-          totalTiers += rows.length;
-        }
-      }
+      batch.set(ruleRef, payload, { merge: true });
 
       await batch.commit();
 
       setIsCommissionDirty(false);
       await fetchAllCommissionRules();
 
-      setSuccessMsg(`Successfully saved all ${totalCombinations} commission configurations (${totalTiers} tiers) for ${commissionRole} to Firestore.`);
-      setTimeout(() => setSuccessMsg(null), 5000);
+      setSuccessMsg(`Successfully saved commission configuration for ${commissionRole} > ${selectedCommissionScopeName} (${currentEffectiveSubService}).`);
+      setTimeout(() => setSuccessMsg(null), 4000);
     } catch (err) {
-      console.error('Error batch-saving commission matrix:', err);
+      console.error('Error saving commission rule:', err);
       const errInfo = handleFirestoreError(err, OperationType.WRITE, COLLECTIONS.COMMISSION_RULES);
       setErrorMsg(`Failed to save commission matrix: ${errInfo.error}`);
     } finally {

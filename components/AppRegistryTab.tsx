@@ -3,6 +3,7 @@
 'use client';
 import { COLLECTIONS } from "@/src/config/schema";
 import { ConfirmModal } from './ConfirmModal';
+import { sanitizeFirestorePayload } from '@/lib/firestoreSanitizer';
 
 
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
@@ -135,8 +136,12 @@ export default function AppRegistryTab({ currentEmail, currentRole }: AppRegistr
 
         setApps(list);
         if (typeof window !== 'undefined') {
-          localStorage.setItem('registered_apps', JSON.stringify(list));
-          localStorage.setItem('apps', JSON.stringify(list));
+          try {
+            localStorage.setItem('registered_apps', JSON.stringify(list));
+            localStorage.setItem('apps', JSON.stringify(list));
+          } catch (storageErr) {
+            console.warn('Quota exceeded caching apps to localStorage:', storageErr);
+          }
         }
         setLoading(false);
       },
@@ -173,8 +178,12 @@ export default function AppRegistryTab({ currentEmail, currentRole }: AppRegistr
       });
       setApps(list);
       if (typeof window !== 'undefined') {
-        localStorage.setItem('registered_apps', JSON.stringify(list));
-        localStorage.setItem('apps', JSON.stringify(list));
+        try {
+          localStorage.setItem('registered_apps', JSON.stringify(list));
+          localStorage.setItem('apps', JSON.stringify(list));
+        } catch (storageErr) {
+          console.warn('Quota exceeded caching apps to localStorage:', storageErr);
+        }
       }
     } catch (err) {
       console.error('Error refreshing apps:', err);
@@ -230,12 +239,12 @@ export default function AppRegistryTab({ currentEmail, currentRole }: AppRegistr
 
       if (editingApp && editingApp.id) {
         // Update existing
-        await setDoc(doc(db, COLLECTIONS.APPS, editingApp.id), docData, { merge: true });
+        await setDoc(doc(db, COLLECTIONS.APPS, editingApp.id), sanitizeFirestorePayload(docData), { merge: true });
         setSuccessMsg(`App "${docData.appName}" updated successfully.`);
       } else {
         // Create new with deterministic appId upsert
         const uniqueKey = docData.appId;
-        await setDoc(doc(db, COLLECTIONS.APPS, uniqueKey), docData, { merge: true });
+        await setDoc(doc(db, COLLECTIONS.APPS, uniqueKey), sanitizeFirestorePayload(docData), { merge: true });
         setSuccessMsg(`App "${docData.appName}" registered successfully.`);
       }
 
@@ -389,7 +398,7 @@ export default function AppRegistryTab({ currentEmail, currentRole }: AppRegistr
           };
 
           // Strict upsert with setDoc and merge: true
-          await setDoc(doc(db, COLLECTIONS.APPS, appId), docData, { merge: true });
+          await setDoc(doc(db, COLLECTIONS.APPS, appId), sanitizeFirestorePayload(docData), { merge: true });
 
           const existingIndex = updatedApps.findIndex(a => 
             a.id === appId || a.appId === appId || a.appName.toLowerCase() === name.toLowerCase()
@@ -405,8 +414,12 @@ export default function AppRegistryTab({ currentEmail, currentRole }: AppRegistr
 
         setApps(updatedApps);
         if (typeof window !== 'undefined') {
-          localStorage.setItem('registered_apps', JSON.stringify(updatedApps));
-          localStorage.setItem('apps', JSON.stringify(updatedApps));
+          try {
+            localStorage.setItem('registered_apps', JSON.stringify(updatedApps));
+            localStorage.setItem('apps', JSON.stringify(updatedApps));
+          } catch (storageErr) {
+            console.warn('Quota exceeded caching apps to localStorage:', storageErr);
+          }
         }
 
         setSuccessMsg(`Successfully imported and deduplicated ${count} application(s).`);
@@ -573,9 +586,13 @@ export default function AppRegistryTab({ currentEmail, currentRole }: AppRegistr
     // Update specific application's record in localStorage
     if (typeof window !== 'undefined') {
       try {
-        // A. Specific record key
+        // A. Specific record key - store only lightweight string IDs to prevent QuotaExceededError
+        const lightweightEmpIds = (tempAllowedEmployees || []).map((emp: any) => 
+          typeof emp === 'string' ? emp : (emp?.employeeId || emp?.id || emp?.email || '')
+        ).filter(Boolean);
+
         localStorage.setItem(`app_${targetAppId}`, JSON.stringify(updatedApp));
-        localStorage.setItem(`app_access_${targetAppId}`, JSON.stringify(tempAllowedEmployees));
+        localStorage.setItem(`app_access_${targetAppId}`, JSON.stringify(lightweightEmpIds));
 
         // B. Update in registered_apps array
         const storedRegistered = localStorage.getItem('registered_apps');
@@ -613,7 +630,7 @@ export default function AppRegistryTab({ currentEmail, currentRole }: AppRegistr
     if (selectedAccessApp.id) {
       try {
         const appRef = doc(db, COLLECTIONS.APPS, selectedAccessApp.id);
-        await setDoc(appRef, { allowedEmployees: tempAllowedEmployees }, { merge: true });
+        await setDoc(appRef, sanitizeFirestorePayload({ allowedEmployees: tempAllowedEmployees }), { merge: true });
       } catch (err) {
         console.warn('Could not sync app access to Firestore:', err);
       }

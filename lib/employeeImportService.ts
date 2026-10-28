@@ -12,7 +12,8 @@ import {
   sanitizeFirestorePayload,
   normalizeEmployeeProfilePayload,
   safeSetDoc,
-  safeUpdateDoc
+  safeUpdateDoc,
+  isZeroOrPositive
 } from '@/lib/firestoreSanitizer';
 
 /**
@@ -825,8 +826,8 @@ export function deduplicateEmployeeList(rawList: UserDocument[]): {
       if (docTakesPrecedence) {
         matched.department = docItem.department || matched.department;
         matched.designation = docItem.designation || matched.designation;
-        matched.basicPay = (docItem.basicPay !== undefined && docItem.basicPay !== null && docItem.basicPay > 0)
-          ? docItem.basicPay
+        matched.basicPay = isZeroOrPositive(docItem.basicPay)
+          ? Number(docItem.basicPay)
           : (matched.basicPay ?? 0);
         matched.dateOfJoining = docItem.dateOfJoining || docItem.doj || matched.dateOfJoining || matched.doj;
         matched.doj = matched.dateOfJoining;
@@ -846,8 +847,8 @@ export function deduplicateEmployeeList(rawList: UserDocument[]): {
       } else {
         matched.department = matched.department || docItem.department;
         matched.designation = matched.designation || docItem.designation;
-        matched.basicPay = (matched.basicPay !== undefined && matched.basicPay !== null && matched.basicPay > 0)
-          ? matched.basicPay
+        matched.basicPay = isZeroOrPositive(matched.basicPay)
+          ? Number(matched.basicPay)
           : (docItem.basicPay ?? 0);
         matched.dateOfJoining = matched.dateOfJoining || matched.doj || docItem.dateOfJoining || docItem.doj;
         matched.doj = matched.dateOfJoining;

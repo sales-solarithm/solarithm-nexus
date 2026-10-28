@@ -40,6 +40,7 @@ import {
   writeBatch,
   onSnapshot 
 } from 'firebase/firestore';
+import { sanitizeFirestorePayload } from '@/lib/firestoreSanitizer';
 
 interface ProposalManagementTabProps {
   currentEmail: string;
@@ -229,11 +230,11 @@ export default function ProposalManagementTab({ currentEmail, currentRole }: Pro
         const exists = proposals.some((p) => p.proposalNumber.toUpperCase() === item.proposalNumber.toUpperCase());
         if (!exists) {
           const docRef = doc(collection(db, COLLECTIONS.PROPOSALS));
-          batch.set(docRef, {
+          batch.set(docRef, sanitizeFirestorePayload({
             proposalNumber: item.proposalNumber,
             pricingCategory: item.pricingCategory,
             createdAt: new Date().toISOString()
-          });
+          }));
         }
       }
       await batch.commit();
@@ -299,12 +300,12 @@ export default function ProposalManagementTab({ currentEmail, currentRole }: Pro
       };
 
       if (editingProposalId) {
-        await setDoc(doc(db, COLLECTIONS.PROPOSALS, editingProposalId), payload, { merge: true });
+        await setDoc(doc(db, COLLECTIONS.PROPOSALS, editingProposalId), sanitizeFirestorePayload(payload), { merge: true });
         setSuccessMsg(`Proposal "${propNum}" updated.`);
       } else {
         const uniqueKey = propNum.toLowerCase().replace(/[^a-z0-9]/g, '_');
         const newRef = doc(db, COLLECTIONS.PROPOSALS, uniqueKey);
-        await setDoc(newRef, payload, { merge: true });
+        await setDoc(newRef, sanitizeFirestorePayload(payload), { merge: true });
         setSuccessMsg(`Proposal "${propNum}" created.`);
       }
 
@@ -451,7 +452,7 @@ export default function ProposalManagementTab({ currentEmail, currentRole }: Pro
           };
 
           // Strict upsert with setDoc and merge: true
-          await setDoc(doc(db, COLLECTIONS.PROPOSALS, uniqueKey), payload, { merge: true });
+          await setDoc(doc(db, COLLECTIONS.PROPOSALS, uniqueKey), sanitizeFirestorePayload(payload), { merge: true });
 
           const existingIndex = updatedProposals.findIndex(p => 
             p.id === uniqueKey || (p.proposalNumber || '').toUpperCase() === propNum
@@ -466,8 +467,12 @@ export default function ProposalManagementTab({ currentEmail, currentRole }: Pro
         }
 
         setProposals(updatedProposals);
-        if (typeof window !== 'undefined') {
-          localStorage.setItem('proposals', JSON.stringify(updatedProposals));
+        try {
+          if (typeof window !== 'undefined') {
+            localStorage.setItem('proposals', JSON.stringify(updatedProposals));
+          }
+        } catch (e) {
+          console.warn('Could not update localStorage proposals cache', e);
         }
 
         setSuccessMsg(`Successfully imported and deduplicated ${count} proposal record(s).`);
