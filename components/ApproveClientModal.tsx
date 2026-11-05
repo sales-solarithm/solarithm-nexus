@@ -17,7 +17,11 @@ import {
   Sparkles, 
   IndianRupee, 
   ShieldCheck, 
-  SlidersHorizontal 
+  SlidersHorizontal,
+  Lock,
+  Unlock,
+  RotateCcw,
+  Layers
 } from 'lucide-react';
 import { 
   collection, 
@@ -86,9 +90,104 @@ export default function ApproveClientModal({
     return new Date().toISOString().split('T')[0];
   });
   const [fallbackCategory, setFallbackCategory] = useState<string>('T4');
+  const [isPriceEngineMapped, setIsPriceEngineMapped] = useState<boolean>(true);
+  const [isCustomOverride, setIsCustomOverride] = useState<boolean>(false);
 
   const [approving, setApproving] = useState<boolean>(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+
+  // Combine live Firestore package plans and canonical defaults
+  const allKnownPackagePlans = useMemo(() => {
+    const list: PackagePlanDocument[] = [];
+    const ids = new Set<string>();
+
+    if (packagePlans && packagePlans.length > 0) {
+      packagePlans.forEach(p => {
+        if (p.status !== 'inactive') {
+          list.push(p);
+          ids.add(p.id);
+        }
+      });
+    }
+
+    CANONICAL_DEFAULT_PACKAGE_PLANS.forEach(p => {
+      if (!ids.has(p.id)) {
+        list.push(p);
+        ids.add(p.id);
+      }
+    });
+
+    return list;
+  }, [packagePlans]);
+
+  // Derive available scopes dynamically from live/canonical package plans
+  const availableScopes = useMemo(() => {
+    const scopes = new Set<string>();
+    allKnownPackagePlans.forEach((p) => {
+      if (p.scope && p.status !== 'inactive') {
+        scopes.add(p.scope.trim());
+      }
+    });
+    if (scopes.size === 0) return ['Pre Design', 'Post Design'];
+    return Array.from(scopes).sort();
+  }, [allKnownPackagePlans]);
+
+  const [isCustomFeeUnlocked, setIsCustomFeeUnlocked] = useState(false);
+
+  // Reactive mapping helper: finds matching plan in Price Engine synchronously
+  const handleUpdateMatrixParam = (params: {
+    scopeCovered?: string;
+    projectsPerMonth?: number;
+    durationMonths?: number;
+    startDate?: string;
+  }) => {
+    const nextScope = (params.scopeCovered !== undefined ? params.scopeCovered : packageScope).trim();
+    const nextPpm = params.projectsPerMonth !== undefined ? Number(params.projectsPerMonth) : packagePpm;
+    const nextDur = params.durationMonths !== undefined ? Number(params.durationMonths) : packageDuration;
+    const nextStart = params.startDate !== undefined ? params.startDate : packageStartDate;
+
+    if (params.scopeCovered !== undefined) setPackageScope(nextScope);
+    if (params.projectsPerMonth !== undefined) setPackagePpm(nextPpm);
+    if (params.durationMonths !== undefined) setPackageDuration(nextDur);
+    if (params.startDate !== undefined) setPackageStartDate(nextStart);
+
+    const matched = allKnownPackagePlans.find(p =>
+      (p.scope || '').trim().toLowerCase() === nextScope.toLowerCase() &&
+      Number(p.projectsPerMonth) === nextPpm &&
+      Number(p.durationMonths) === nextDur
+    );
+
+    if (matched) {
+      setPackageUpfrontPrice(Number(matched.upfrontPrice) || 0);
+      setPackageBonus(Number(matched.bonusProjects) || 0);
+      setSelectedPlanId(matched.id);
+      setIsPriceEngineMapped(true);
+      setIsCustomOverride(false);
+    } else {
+      setSelectedPlanId('custom');
+      setIsPriceEngineMapped(false);
+      setIsCustomOverride(true);
+    }
+    setIsCustomFeeUnlocked(false);
+  };
+
+  const handleManualUpfrontPriceChange = (val: number) => {
+    setPackageUpfrontPrice(Math.max(0, val));
+    setIsCustomOverride(true);
+    setIsPriceEngineMapped(false);
+    setSelectedPlanId('custom');
+  };
+
+  const handleManualBonusChange = (val: number) => {
+    setPackageBonus(Math.max(0, val));
+    setIsCustomOverride(true);
+    setIsPriceEngineMapped(false);
+    setSelectedPlanId('custom');
+  };
+
+  const handleResetFeeToEngine = () => {
+    handleUpdateMatrixParam({});
+  };
 
   // 1. DYNAMIC CATEGORY FETCHING (pricingRules & pricingCategories)
   useEffect(() => {
@@ -216,6 +315,19 @@ export default function ApproveClientModal({
       setCommercialModel('PER_KW');
     }
 
+    if (client.subscriptionPlan) {
+      const sub = client.subscriptionPlan;
+      if (sub.scopeCovered) setPackageScope(sub.scopeCovered);
+      if (sub.projectsPerMonth) setPackagePpm(Number(sub.projectsPerMonth));
+      if (sub.durationMonths) setPackageDuration(Number(sub.durationMonths));
+      if (sub.upfrontPrice !== undefined) setPackageUpfrontPrice(Number(sub.upfrontPrice));
+      if (sub.bonusProjects !== undefined) setPackageBonus(Number(sub.bonusProjects));
+      if (sub.startDate) setPackageStartDate(sub.startDate.includes('T') ? sub.startDate.split('T')[0] : sub.startDate);
+      if (sub.planId) setSelectedPlanId(sub.planId);
+      setIsPriceEngineMapped(sub.planId ? sub.planId !== 'custom' : true);
+      setIsCustomOverride(sub.planId === 'custom');
+    }
+
     const resolveCategory = async () => {
       const propNumber = client.proposalNumber?.trim();
       let matchedCategory = '';
@@ -256,21 +368,6 @@ export default function ApproveClientModal({
       isCancelled = true;
     };
   }, [isOpen, client, categories]);
-
-  // 3. Sync preset package values when selectedPlanId changes
-  const handleSelectPlan = (planId: string) => {
-    setSelectedPlanId(planId);
-    if (planId === 'custom') return;
-
-    const matched = packagePlans.find((p) => p.id === planId);
-    if (matched) {
-      setPackageScope(matched.scope || 'Pre Design');
-      setPackagePpm(matched.projectsPerMonth || 100);
-      setPackageDuration(matched.durationMonths || 3);
-      setPackageUpfrontPrice(matched.upfrontPrice || 0);
-      setPackageBonus(matched.bonusProjects || 0);
-    }
-  };
 
   // 4. Dynamic Package Calculations
   const calculatedTotalQuota = useMemo(() => {
@@ -571,102 +668,180 @@ export default function ApproveClientModal({
           <div className="space-y-4 p-4 bg-[#252525] border border-[#333333] rounded-xl">
             <div className="flex items-center justify-between">
               <span className="text-xs font-bold text-[#D4AF37] uppercase tracking-wider flex items-center gap-1.5">
-                <Sparkles className="w-3.5 h-3.5" /> Package Plan Setup &amp; Calculations
+                <Sparkles className="w-3.5 h-3.5" /> Fixed Package Retainer Configuration
               </span>
               <span className="text-[11px] text-gray-400 font-mono">
-                {packagePlans.length} plans available
+                {allKnownPackagePlans.length} engine plans
               </span>
             </div>
 
-            {/* Plan Preset Selector */}
-            <div className="space-y-1">
-              <label className="text-[11px] font-semibold text-gray-400 uppercase">Select Base Plan</label>
-              <select
-                value={selectedPlanId}
-                onChange={(e) => handleSelectPlan(e.target.value)}
-                className="w-full px-3 py-2 bg-[#1E1E1E] border border-[#3A3A3A] focus:border-[#D4AF37] rounded-lg text-xs text-gray-200 focus:outline-none font-mono cursor-pointer"
-              >
-                {packagePlans.map((p) => (
-                  <option key={p.id} value={p.id}>
-                    {p.scope} • {p.projectsPerMonth} PPM • {p.durationMonths}M (₹{p.upfrontPrice?.toLocaleString('en-IN')})
-                  </option>
-                ))}
-                <option value="custom">-- Custom Retainer Setup --</option>
-              </select>
+            {/* Status Bar */}
+            <div className="flex items-center justify-between px-3 py-2 bg-[#1E1E1E] border border-[#333333] rounded-lg text-xs">
+              <div className="flex items-center gap-2">
+                <span className="text-gray-400 font-mono text-[10px] uppercase">Engine Status:</span>
+                {isPriceEngineMapped ? (
+                  <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-semibold bg-emerald-500/15 text-emerald-400 border border-emerald-500/30 font-mono">
+                    <CheckCircle2 className="w-3 h-3 text-emerald-400" />
+                    Price Engine Matched
+                  </span>
+                ) : (
+                  <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-semibold bg-amber-500/15 text-amber-400 border border-amber-500/30 font-mono">
+                    Custom Plan Override
+                  </span>
+                )}
+              </div>
+              {isCustomOverride && (
+                <button
+                  type="button"
+                  onClick={handleResetFeeToEngine}
+                  className="inline-flex items-center gap-1 text-[10px] text-[#D4AF37] hover:underline cursor-pointer font-mono"
+                >
+                  <RotateCcw className="w-3 h-3" />
+                  Re-sync Rate
+                </button>
+              )}
             </div>
 
-            {/* Editable Package Details Grid */}
-            <div className="grid grid-cols-2 sm:grid-cols-3 gap-2.5 pt-1 text-xs">
+            {/* 3-Step Matrix Selector */}
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5 pt-1 text-xs">
+              {/* Step 1: Scope */}
               <div>
-                <label className="text-[10px] text-gray-400 font-mono uppercase block mb-1">Scope</label>
+                <label className="text-[10px] text-gray-400 font-mono uppercase block mb-1">1. Scope of Work *</label>
                 <select
                   value={packageScope}
-                  onChange={(e) => { setPackageScope(e.target.value); setSelectedPlanId('custom'); }}
-                  className="w-full px-2.5 py-1.5 bg-[#1E1E1E] border border-[#3A3A3A] rounded-lg text-gray-200 focus:border-[#D4AF37] focus:outline-none"
+                  onChange={(e) => handleUpdateMatrixParam({ scopeCovered: e.target.value })}
+                  className="w-full px-2.5 py-2 bg-[#1E1E1E] border border-[#3A3A3A] rounded-lg text-gray-200 focus:border-[#D4AF37] focus:outline-none cursor-pointer"
                 >
-                  <option value="Pre Design">Pre Design</option>
-                  <option value="Post Design">Post Design</option>
-                  <option value="Detailed Engineering">Detailed Engineering</option>
+                  {availableScopes.map((scope) => (
+                    <option key={scope} value={scope}>
+                      {scope}
+                    </option>
+                  ))}
                 </select>
               </div>
 
+              {/* Step 2: PPM Quota */}
               <div>
-                <label className="text-[10px] text-gray-400 font-mono uppercase block mb-1">PPM Quota</label>
-                <select
-                  value={packagePpm}
-                  onChange={(e) => { setPackagePpm(Number(e.target.value)); setSelectedPlanId('custom'); }}
-                  className="w-full px-2.5 py-1.5 bg-[#1E1E1E] border border-[#3A3A3A] rounded-lg text-amber-400 font-mono focus:border-[#D4AF37] focus:outline-none"
-                >
-                  <option value={100}>100 / mo</option>
-                  <option value={200}>200 / mo</option>
-                  <option value={300}>300 / mo</option>
-                </select>
+                <label className="text-[10px] text-gray-400 font-mono uppercase block mb-1">2. PPM Quota *</label>
+                <div className="grid grid-cols-3 gap-1">
+                  {[100, 200, 300].map((ppmVal) => (
+                    <button
+                      key={ppmVal}
+                      type="button"
+                      onClick={() => handleUpdateMatrixParam({ projectsPerMonth: ppmVal })}
+                      className={`py-1.5 px-1 text-center rounded-lg text-xs font-mono font-bold transition-all cursor-pointer ${
+                        packagePpm === ppmVal
+                          ? 'bg-gradient-to-r from-[#B38728] via-[#D4AF37] to-[#AA771C] text-black shadow-sm border border-[#D4AF37]'
+                          : 'bg-[#1E1E1E] text-gray-300 hover:text-white border border-[#3A3A3A]'
+                      }`}
+                    >
+                      {ppmVal}
+                    </button>
+                  ))}
+                </div>
               </div>
 
+              {/* Step 3: Duration */}
               <div>
-                <label className="text-[10px] text-gray-400 font-mono uppercase block mb-1">Duration</label>
-                <select
-                  value={packageDuration}
-                  onChange={(e) => { setPackageDuration(Number(e.target.value)); setSelectedPlanId('custom'); }}
-                  className="w-full px-2.5 py-1.5 bg-[#1E1E1E] border border-[#3A3A3A] rounded-lg text-gray-200 font-mono focus:border-[#D4AF37] focus:outline-none"
-                >
-                  <option value={1}>1 Month</option>
-                  <option value={3}>3 Months</option>
-                  <option value={6}>6 Months</option>
-                  <option value={12}>12 Months</option>
-                </select>
+                <label className="text-[10px] text-gray-400 font-mono uppercase block mb-1">3. Duration *</label>
+                <div className="grid grid-cols-3 gap-1">
+                  {[
+                    { months: 1, label: '1M' },
+                    { months: 3, label: '3M' },
+                    { months: 6, label: '6M' }
+                  ].map((durItem) => (
+                    <button
+                      key={durItem.months}
+                      type="button"
+                      onClick={() => handleUpdateMatrixParam({ durationMonths: durItem.months })}
+                      className={`py-1.5 px-1 text-center rounded-lg text-xs font-mono font-bold transition-all cursor-pointer ${
+                        packageDuration === durItem.months
+                          ? 'bg-gradient-to-r from-[#B38728] via-[#D4AF37] to-[#AA771C] text-black shadow-sm border border-[#D4AF37]'
+                          : 'bg-[#1E1E1E] text-gray-300 hover:text-white border border-[#3A3A3A]'
+                      }`}
+                    >
+                      {durItem.label}
+                    </button>
+                  ))}
+                </div>
               </div>
+            </div>
 
+            {/* Financial Terms & Start Date */}
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5 pt-1 text-xs">
+              {/* Start Date */}
               <div>
-                <label className="text-[10px] text-gray-400 font-mono uppercase block mb-1">Upfront Fee (₹)</label>
-                <input
-                  type="number"
-                  min={0}
-                  value={packageUpfrontPrice}
-                  onChange={(e) => { setPackageUpfrontPrice(Number(e.target.value) || 0); setSelectedPlanId('custom'); }}
-                  className="w-full px-2.5 py-1.5 bg-[#1E1E1E] border border-[#3A3A3A] rounded-lg text-emerald-400 font-mono focus:border-[#D4AF37] focus:outline-none"
-                />
-              </div>
-
-              <div>
-                <label className="text-[10px] text-gray-400 font-mono uppercase block mb-1">Bonus Projects</label>
-                <input
-                  type="number"
-                  min={0}
-                  value={packageBonus}
-                  onChange={(e) => { setPackageBonus(Number(e.target.value) || 0); setSelectedPlanId('custom'); }}
-                  className="w-full px-2.5 py-1.5 bg-[#1E1E1E] border border-[#3A3A3A] rounded-lg text-purple-300 font-mono focus:border-[#D4AF37] focus:outline-none"
-                />
-              </div>
-
-              <div>
-                <label className="text-[10px] text-gray-400 font-mono uppercase block mb-1">Start Date</label>
+                <label className="text-[10px] text-gray-400 font-mono uppercase block mb-1">Retainer Start Date *</label>
                 <input
                   type="date"
                   value={packageStartDate}
-                  onChange={(e) => setPackageStartDate(e.target.value)}
+                  onChange={(e) => handleUpdateMatrixParam({ startDate: e.target.value })}
                   className="w-full px-2.5 py-1.5 bg-[#1E1E1E] border border-[#3A3A3A] rounded-lg text-gray-200 font-mono focus:border-[#D4AF37] focus:outline-none"
                 />
+              </div>
+
+              {/* Upfront Retainer Fee */}
+              <div>
+                <div className="flex items-center justify-between mb-1">
+                  <label className="text-[10px] text-gray-400 font-mono uppercase">Upfront Fee (₹) *</label>
+                  <button
+                    type="button"
+                    onClick={() => setIsCustomFeeUnlocked(prev => !prev)}
+                    className="inline-flex items-center gap-1 text-[9px] text-[#D4AF37] hover:underline cursor-pointer font-mono"
+                  >
+                    {isCustomFeeUnlocked ? (
+                      <>
+                        <Lock className="w-2.5 h-2.5" /> Lock
+                      </>
+                    ) : (
+                      <>
+                        <Unlock className="w-2.5 h-2.5" /> Custom
+                      </>
+                    )}
+                  </button>
+                </div>
+                {isCustomFeeUnlocked ? (
+                  <input
+                    type="number"
+                    min={0}
+                    step={1000}
+                    value={packageUpfrontPrice}
+                    onChange={(e) => handleManualUpfrontPriceChange(Number(e.target.value) || 0)}
+                    className="w-full px-2.5 py-1.5 bg-[#1E1E1E] border border-amber-500/50 rounded-lg text-amber-300 font-mono focus:border-[#D4AF37] focus:outline-none"
+                  />
+                ) : (
+                  <div className="flex items-center justify-between px-2.5 py-1.5 bg-[#1E1E1E] border border-[#3A3A3A] rounded-lg text-emerald-400 font-mono font-bold text-xs">
+                    <span>₹{packageUpfrontPrice.toLocaleString('en-IN')}</span>
+                    <span className="text-[9px] text-emerald-400/80 font-normal">Auto</span>
+                  </div>
+                )}
+              </div>
+
+              {/* Bonus Projects */}
+              <div>
+                <div className="flex items-center justify-between mb-1">
+                  <label className="text-[10px] text-gray-400 font-mono uppercase">Bonus Projects</label>
+                  {packageBonus > 0 && !isCustomFeeUnlocked && (
+                    <span className="text-[9px] text-emerald-400 font-mono font-semibold">
+                      +{packageBonus} Free
+                    </span>
+                  )}
+                </div>
+                {isCustomFeeUnlocked ? (
+                  <input
+                    type="number"
+                    min={0}
+                    step={1}
+                    value={packageBonus}
+                    onChange={(e) => handleManualBonusChange(Number(e.target.value) || 0)}
+                    className="w-full px-2.5 py-1.5 bg-[#1E1E1E] border border-amber-500/50 rounded-lg text-purple-300 font-mono focus:border-[#D4AF37] focus:outline-none"
+                  />
+                ) : (
+                  <div className="flex items-center justify-between px-2.5 py-1.5 bg-[#1E1E1E] border border-[#3A3A3A] rounded-lg text-purple-300 font-mono font-bold text-xs">
+                    <span>{packageBonus} Projects</span>
+                    <span className="text-[9px] text-purple-400/80 font-normal">Free</span>
+                  </div>
+                )}
               </div>
             </div>
 

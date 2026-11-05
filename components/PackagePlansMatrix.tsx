@@ -266,8 +266,155 @@ export function computeTotalAllowed(projectsPerMonth: number, durationMonths: nu
 }
 
 export function generatePlanDocId(scope: string, projectsPerMonth: number, durationMonths: number): string {
-  const cleanScope = (scope || 'plan').toLowerCase().replace(/[^a-z0-9]/g, '_');
+  const cleanScope = String(scope || 'plan')
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '_')
+    .replace(/^_+|_+$/g, '') || 'plan';
   return `${cleanScope}_${projectsPerMonth}_${durationMonths}m`;
+}
+
+// 1 & 2. Robust Data Cleaning & Flexible Header Matching for Package Plans
+export function parsePackagePlansFromRows(rawRows: any[][]): PackagePlanDocument[] {
+  if (!rawRows || rawRows.length <= 1) return [];
+
+  // Identify header row with flexible case-insensitive regex matching
+  let headerIdx = -1;
+  let scopeIdx = 0;
+  let ppmIdx = 1;
+  let durIdx = 2;
+  let upfrontIdx = 3;
+  let bonusIdx = 4;
+  let totalIdx = 5;
+  let statusIdx = 6;
+
+  for (let r = 0; r < Math.min(6, rawRows.length); r++) {
+    const row = rawRows[r].map((c) => String(c ?? '').trim().toLowerCase());
+    const hasHeaders = row.some((c) => /scope|project|month|upfront|price|fee|rate|cost|bonus|quota|duration|plan/i.test(c));
+    if (hasHeaders) {
+      headerIdx = r;
+      row.forEach((col, idx) => {
+        if (/project.*month|ppm|projectspermonth|quota/i.test(col)) {
+          ppmIdx = idx;
+        } else if (/duration|plan.*duration|\bmonths?\b/i.test(col)) {
+          durIdx = idx;
+        } else if (/scope|scope.*work|service/i.test(col)) {
+          scopeIdx = idx;
+        } else if (/upfront|price|fee|rate|cost/i.test(col)) {
+          upfrontIdx = idx;
+        } else if (/bonus|free.*quota/i.test(col)) {
+          bonusIdx = idx;
+        } else if (/total|allowed/i.test(col)) {
+          totalIdx = idx;
+        } else if (/status|active/i.test(col)) {
+          statusIdx = idx;
+        }
+      });
+      break;
+    }
+  }
+
+  const startIndex = headerIdx !== -1 ? headerIdx + 1 : 0;
+  const parsedPlans: PackagePlanDocument[] = [];
+  const nowIso = new Date().toISOString();
+
+  for (let i = startIndex; i < rawRows.length; i++) {
+    const row = rawRows[i];
+    if (!row || row.length === 0 || row.every((c) => c === undefined || c === null || String(c).trim() === '')) {
+      continue;
+    }
+
+    const rawScope = String(row[scopeIdx] ?? '').trim() || 'Pre Design';
+    // Skip if row is accidentally a repeated header label
+    if (/^scope$/i.test(rawScope) || /^scope.*work$/i.test(rawScope)) {
+      continue;
+    }
+
+    // 1. Robust Data Cleaning (Strip Currency & Unit Strings):
+    // PPM Quota: e.g. "100 /mo", "100", "50 PPM" -> 100
+    const rawPpm = row[ppmIdx];
+    const ppmDigits = String(rawPpm ?? '').replace(/[^0-9]/g, '');
+    const ppm = ppmDigits ? parseInt(ppmDigits, 10) || 100 : 100;
+
+    // Duration (Months): e.g. "1 Month", "3 Months", "6M", "3" -> 3
+    const rawDur = row[durIdx];
+    const durDigits = String(rawDur ?? '').replace(/[^0-9]/g, '');
+    const dur = durDigits ? parseInt(durDigits, 10) || 1 : 1;
+
+    // Upfront Price (₹): e.g. "₹70,000", "70,000", "70000", "0" -> 70000 (preserves 0)
+    const rawUpfront = row[upfrontIdx];
+    const priceDigits = String(rawUpfront ?? '').replace(/[^0-9.]/g, '');
+    const upfrontPrice = priceDigits ? parseFloat(priceDigits) || 0 : 0;
+
+    // Bonus Projects: e.g. "15 Projects", "15", "0" -> 15 (preserves 0)
+    const rawBonus = row[bonusIdx];
+    const bonusDigits = String(rawBonus ?? '').replace(/[^0-9]/g, '');
+    const bonusProjects = bonusDigits ? parseInt(bonusDigits, 10) || 0 : 0;
+
+    // Total Allowed Quota: Auto-calculate as (PPM * Duration) + Bonus
+    const totalAllowedProjects = (ppm * dur) + bonusProjects;
+
+    // Status: e.g. "active", "inactive"
+    const rawStatus = String(row[statusIdx] ?? '').trim().toLowerCase();
+    const status: 'active' | 'inactive' = rawStatus === 'inactive' ? 'inactive' : 'active';
+
+    // 3. Deterministic ID Generation & Preventing Overwrite Collisions:
+    // cleanScope_ppm_durm ensures new combinations increase total row count
+    const planId = generatePlanDocId(rawScope, ppm, dur);
+
+    parsedPlans.push({
+      id: planId,
+      scope: rawScope,
+      projectsPerMonth: ppm,
+      durationMonths: dur,
+      upfrontPrice,
+      bonusProjects,
+      totalAllowedProjects,
+      status,
+      updatedAt: nowIso,
+      createdAt: nowIso
+    });
+  }
+
+  return parsedPlans;
+}
+
+// 4. Direct Firestore Batch Commit for Package Plans
+export async function commitPackagePlansToFirestore(plans: PackagePlanDocument[]): Promise<number> {
+  if (!plans || plans.length === 0) return 0;
+
+  const CHUNK_SIZE = 400;
+  let totalCommitted = 0;
+
+  for (let i = 0; i < plans.length; i += CHUNK_SIZE) {
+    const chunk = plans.slice(i, i + CHUNK_SIZE);
+    const batch = writeBatch(db);
+
+    chunk.forEach((plan) => {
+      const planRef = doc(db, COLLECTIONS.PACKAGE_PLANS, plan.id);
+      const cleanPayload = sanitizeFirestorePayload({
+        ...plan,
+        updatedAt: new Date().toISOString()
+      });
+      batch.set(planRef, cleanPayload, { merge: true });
+    });
+
+    await batch.commit();
+    totalCommitted += chunk.length;
+  }
+
+  return totalCommitted;
+}
+
+// Complete parse & direct commit workflow
+export async function parseAndCommitPackagePlans(rawRows: any[][]): Promise<{ count: number; plans: PackagePlanDocument[] }> {
+  const parsedPlans = parsePackagePlansFromRows(rawRows);
+  if (parsedPlans.length === 0) {
+    throw new Error('No valid package plan rows found in file.');
+  }
+
+  await commitPackagePlansToFirestore(parsedPlans);
+  return { count: parsedPlans.length, plans: parsedPlans };
 }
 
 interface PackagePlansMatrixProps {
@@ -576,7 +723,7 @@ export default function PackagePlansMatrix({ onNotifySuccess, onNotifyError }: P
     notify('success', `Exported ${dataToExport.length} package plans to CSV.`);
   };
 
-  // Import CSV / Excel File
+  // 4 & 5. Import CSV / Excel File with Direct Firestore Persistence
   const handleImportFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -596,90 +743,24 @@ export default function PackagePlansMatrix({ onNotifySuccess, onNotifyError }: P
         return;
       }
 
-      // Identify header row
-      let headerIdx = -1;
-      let scopeIdx = 0;
-      let ppmIdx = 1;
-      let durIdx = 2;
-      let upfrontIdx = 3;
-      let bonusIdx = 4;
-      let totalIdx = 5;
-      let statusIdx = 6;
+      // Directly parse, clean, and batch-commit to Firestore /packagePlans
+      const result = await parseAndCommitPackagePlans(rawRows);
 
-      for (let r = 0; r < Math.min(5, rawRows.length); r++) {
-        const row = rawRows[r].map((c) => String(c).trim().toLowerCase());
-        const hasHeaders = row.some((c) => /scope|project|month|upfront|bonus|quota|duration/i.test(c));
-        if (hasHeaders) {
-          headerIdx = r;
-          row.forEach((col, idx) => {
-            if (/scope/i.test(col)) scopeIdx = idx;
-            else if (/project.*month|ppm|quota.*month|projectspermonth/i.test(col)) ppmIdx = idx;
-            else if (/duration|month/i.test(col)) durIdx = idx;
-            else if (/upfront|fee|price|rate|cost/i.test(col)) upfrontIdx = idx;
-            else if (/bonus/i.test(col)) bonusIdx = idx;
-            else if (/total|allowed/i.test(col)) totalIdx = idx;
-            else if (/status|active/i.test(col)) statusIdx = idx;
-          });
-          break;
-        }
-      }
-
-      const startIndex = headerIdx !== -1 ? headerIdx + 1 : 1;
-      const parsedPlans: PackagePlanDocument[] = [];
-
-      for (let i = startIndex; i < rawRows.length; i++) {
-        const row = rawRows[i];
-        if (!row || row.length === 0 || row.every((c) => c === undefined || c === null || c === '')) {
-          continue;
-        }
-
-        const rawScope = String(row[scopeIdx] || 'Pre Design').trim();
-        const rawPpm = row[ppmIdx];
-        const rawDur = row[durIdx];
-        const rawUpfront = row[upfrontIdx];
-        const rawBonus = row[bonusIdx];
-        const rawStatus = String(row[statusIdx] || 'active').trim().toLowerCase();
-
-        const ppm = isZeroOrPositive(rawPpm) ? parseInt(String(rawPpm), 10) || 100 : 100;
-        const dur = isZeroOrPositive(rawDur) ? parseInt(String(rawDur), 10) || 1 : 1;
-        const upfront = isZeroOrPositive(rawUpfront) ? parseFloat(String(rawUpfront)) || 0 : 0;
-        const bonus = isZeroOrPositive(rawBonus) ? parseInt(String(rawBonus), 10) || 0 : 0;
-        const total = computeTotalAllowed(ppm, dur, bonus);
-
-        const planId = generatePlanDocId(rawScope, ppm, dur);
-
-        parsedPlans.push({
-          id: planId,
-          scope: rawScope,
-          projectsPerMonth: ppm,
-          durationMonths: dur,
-          upfrontPrice: upfront,
-          bonusProjects: bonus,
-          totalAllowedProjects: total,
-          status: rawStatus === 'inactive' ? 'inactive' : 'active',
-          updatedAt: new Date().toISOString(),
-          createdAt: new Date().toISOString()
-        });
-      }
-
-      if (parsedPlans.length === 0) {
-        notify('error', 'Could not parse valid package plan rows from file.');
-        return;
-      }
-
-      // Upsert parsed plans into current plans state
+      // Immediately upsert parsed plans into local plans state and snapshot
       setPlans((prev) => {
         const map = new Map<string, PackagePlanDocument>();
         prev.forEach((p) => map.set(p.id, p));
-        parsedPlans.forEach((p) => map.set(p.id, p));
-        return Array.from(map.values()).sort((a, b) => {
+        result.plans.forEach((p) => map.set(p.id, p));
+        const updated = Array.from(map.values()).sort((a, b) => {
           if (a.scope !== b.scope) return a.scope.localeCompare(b.scope);
           if (a.projectsPerMonth !== b.projectsPerMonth) return a.projectsPerMonth - b.projectsPerMonth;
           return a.durationMonths - b.durationMonths;
         });
+        setSavedPlansSnapshot(JSON.parse(JSON.stringify(updated)));
+        return updated;
       });
 
-      notify('success', `Imported ${parsedPlans.length} package plans into the active matrix. Review and click "Commit All Plans to Server" to save.`);
+      notify('success', `Successfully imported and saved ${result.count} package plan(s) to Firestore.`);
     } catch (err: any) {
       console.error('Package plan CSV import error:', err);
       notify('error', `Error importing package plans: ${err?.message || 'Invalid file format'}`);

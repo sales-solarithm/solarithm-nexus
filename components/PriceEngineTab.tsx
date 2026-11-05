@@ -28,7 +28,7 @@ import {
   UserCheck,
   Package
 } from 'lucide-react';
-import PackagePlansMatrix from './PackagePlansMatrix';
+import PackagePlansMatrix, { parseAndCommitPackagePlans } from './PackagePlansMatrix';
 import { isZeroOrPositive, sanitizeFirestorePayload } from '@/lib/firestoreSanitizer';
 import { 
   db, 
@@ -949,69 +949,9 @@ export default function PriceEngineTab({ currentEmail, currentRole }: PriceEngin
         setErrorMsg('File is empty or missing data rows.');
         return;
       }
-      let headerIdx = -1;
-      let scopeIdx = 0;
-      let ppmIdx = 1;
-      let durIdx = 2;
-      let upfrontIdx = 3;
-      let bonusIdx = 4;
-      let statusIdx = 6;
-
-      for (let r = 0; r < Math.min(5, rawRows.length); r++) {
-        const row = rawRows[r].map((c) => String(c).trim().toLowerCase());
-        if (row.some((c) => /scope|project|month|upfront|bonus/i.test(c))) {
-          headerIdx = r;
-          row.forEach((col, idx) => {
-            if (/scope/i.test(col)) scopeIdx = idx;
-            else if (/project.*month|ppm|projectspermonth/i.test(col)) ppmIdx = idx;
-            else if (/duration|month/i.test(col)) durIdx = idx;
-            else if (/upfront|price|fee/i.test(col)) upfrontIdx = idx;
-            else if (/bonus/i.test(col)) bonusIdx = idx;
-            else if (/status/i.test(col)) statusIdx = idx;
-          });
-          break;
-        }
-      }
-
-      const startIndex = headerIdx !== -1 ? headerIdx + 1 : 1;
-      const batch = writeBatch(db);
-      let count = 0;
-
-      for (let i = startIndex; i < rawRows.length; i++) {
-        const row = rawRows[i];
-        if (!row || row.length === 0 || row.every((c) => c === undefined || c === null || c === '')) continue;
-
-        const rawScope = String(row[scopeIdx] || 'Pre Design').trim();
-        const ppm = isZeroOrPositive(row[ppmIdx]) ? parseInt(String(row[ppmIdx]), 10) || 100 : 100;
-        const dur = isZeroOrPositive(row[durIdx]) ? parseInt(String(row[durIdx]), 10) || 1 : 1;
-        const upfront = isZeroOrPositive(row[upfrontIdx]) ? parseFloat(String(row[upfrontIdx])) || 0 : 0;
-        const bonus = isZeroOrPositive(row[bonusIdx]) ? parseInt(String(row[bonusIdx]), 10) || 0 : 0;
-        const status = String(row[statusIdx] || 'active').trim().toLowerCase() === 'inactive' ? 'inactive' : 'active';
-        const total = ppm * dur + bonus;
-
-        const planId = `${rawScope.toLowerCase().replace(/[^a-z0-9]/g, '_')}_${ppm}_${dur}m`;
-        const planRef = doc(db, COLLECTIONS.PACKAGE_PLANS, planId);
-
-        const payload = sanitizeFirestorePayload({
-          id: planId,
-          scope: rawScope,
-          projectsPerMonth: ppm,
-          durationMonths: dur,
-          upfrontPrice: upfront,
-          bonusProjects: bonus,
-          totalAllowedProjects: total,
-          status,
-          updatedAt: new Date().toISOString(),
-          createdAt: new Date().toISOString()
-        });
-
-        batch.set(planRef, payload, { merge: true });
-        count++;
-      }
-
-      if (count > 0) {
-        await batch.commit();
-        setSuccessMsg(`Successfully imported and committed ${count} package plans to /${COLLECTIONS.PACKAGE_PLANS}.`);
+      const result = await parseAndCommitPackagePlans(rawRows);
+      if (result.count > 0) {
+        setSuccessMsg(`Successfully imported and saved ${result.count} package plan(s) to Firestore.`);
         setTimeout(() => setSuccessMsg(null), 4000);
       } else {
         setErrorMsg('No valid package plan rows found in file.');
@@ -1442,7 +1382,7 @@ export default function PriceEngineTab({ currentEmail, currentRole }: PriceEngin
       );
 
       const isPackagePlan = sampleRows.some((row) =>
-        row.some((cell) => /bonus.*project|projectspermonth|upfront.*price|package.*plan|durationmonths|totalallowed/i.test(String(cell)))
+        row.some((cell) => /bonus|project.*month|ppm|projectspermonth|quota.*month|duration.*month|plan.*duration|upfront|package.*plan|durationmonths|totalallowed/i.test(String(cell)))
       );
 
       const targetMode: 'commission' | 'pricing' | 'package-plans' =

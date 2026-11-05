@@ -21,7 +21,8 @@ import {
   setDoc,
   deleteDoc,
   writeBatch,
-  updateDoc
+  updateDoc,
+  onSnapshot
 } from 'firebase/firestore';
 import { 
   Building2,
@@ -116,6 +117,95 @@ export default function ClientsTab({ currentEmail, currentRole }: ClientsTabProp
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [successMsg, setSuccessMsg] = useState<string | null>(null);
 
+  // Dynamic Price Engine categories fetched live via onSnapshot
+  const [pricingEngineCategories, setPricingEngineCategories] = useState<string[]>([]);
+
+  // Real-time synchronization with Price Engine categories (PRICING_RULES & PRICING_CATEGORIES)
+  useEffect(() => {
+    let rulesCategories: string[] = [];
+    let explicitCategories: string[] = [];
+
+    const updateCombined = () => {
+      const merged = Array.from(new Set([...rulesCategories, ...explicitCategories]))
+        .map(c => (c || '').trim())
+        .filter(Boolean);
+
+      merged.sort((a, b) => a.localeCompare(b, undefined, { numeric: true, sensitivity: 'base' }));
+      setPricingEngineCategories(merged);
+    };
+
+    // 1. Listen to pricingRules collection
+    const unsubRules = onSnapshot(
+      collection(db, COLLECTIONS.PRICING_RULES),
+      (snap) => {
+        const cats: string[] = [];
+        snap.forEach((d) => {
+          const data = d.data();
+          if (data?.category && typeof data.category === 'string') {
+            cats.push(data.category.trim());
+          }
+        });
+        rulesCategories = cats;
+        updateCombined();
+      },
+      (err) => {
+        console.warn('Snapshot listener caught for pricingRules in ClientsTab:', err);
+      }
+    );
+
+    // 2. Listen to pricingCategories collection
+    const unsubCategories = onSnapshot(
+      collection(db, COLLECTIONS.PRICING_CATEGORIES),
+      (snap) => {
+        const cats: string[] = [];
+        snap.forEach((d) => {
+          const data = d.data();
+          const name = data?.name || d.id;
+          if (name && typeof name === 'string') {
+            cats.push(name.trim());
+          }
+        });
+        explicitCategories = cats;
+        updateCombined();
+      },
+      (err) => {
+        console.warn('Snapshot listener caught for pricingCategories in ClientsTab:', err);
+      }
+    );
+
+    return () => {
+      unsubRules();
+      unsubCategories();
+    };
+  }, []);
+
+  // Dynamically aggregate and deduplicate active categories from:
+  // 1. Live Price Engine (pricingRules & pricingCategories)
+  // 2. Currently loaded clients (to preserve historical/existing client categories)
+  const pricingCategories = useMemo(() => {
+    const set = new Set<string>();
+
+    pricingEngineCategories.forEach(cat => {
+      const clean = (cat || '').trim();
+      if (clean && clean.toLowerCase() !== 'nil') set.add(clean);
+    });
+
+    clients.forEach(c => {
+      const clean = (c.pricingCategory || '').trim();
+      if (clean && clean.toLowerCase() !== 'nil') set.add(clean);
+    });
+
+    if (set.size === 0) {
+      DEFAULT_PRICING_CATEGORIES.forEach(c => set.add(c));
+    }
+
+    const sorted = Array.from(set).sort((a, b) =>
+      a.localeCompare(b, undefined, { numeric: true, sensitivity: 'base' })
+    );
+
+    return [...sorted, 'Nil'];
+  }, [pricingEngineCategories, clients]);
+
   // Bulk Actions
   const [bulkLoading, setBulkLoading] = useState(false);
   const [showCategoryModal, setShowCategoryModal] = useState(false);
@@ -152,7 +242,7 @@ export default function ClientsTab({ currentEmail, currentRole }: ClientsTabProp
   // Open Tier History Modal
   const openTierHistory = (client: ClientDocument) => {
     setTierHistoryClient(client);
-    setNewHistoryCategory(client.pricingCategory && client.pricingCategory !== 'Nil' ? client.pricingCategory : (pricingCategories[0] || 'T1'));
+    setNewHistoryCategory(client.pricingCategory && client.pricingCategory !== 'Nil' ? client.pricingCategory : (pricingCategories.find(c => c !== 'Nil') || 'T1'));
     setNewHistoryEffectiveFrom(new Date().toISOString().split('T')[0]);
     setNewHistoryReason('');
   };
@@ -670,7 +760,6 @@ export default function ClientsTab({ currentEmail, currentRole }: ClientsTabProp
   };
 
   const uniqueCities = Array.from(new Set(clients.map(c => c.city).filter(Boolean))).sort();
-  const pricingCategories = [...DEFAULT_PRICING_CATEGORIES, 'Nil'];
 
   const filteredClients = React.useMemo(() => {
     return clients.filter((c) => {

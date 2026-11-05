@@ -356,6 +356,9 @@ export interface PasswordResetRequestDocument {
   requestedAt?: any;
   resolvedAt?: any;
   resolvedBy?: string;
+  approvedAt?: any;
+  approvedBy?: string;
+  updatedAt?: any;
   tempPassword?: string;
   collectionName?: string;
 }

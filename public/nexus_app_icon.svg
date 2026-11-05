@@ -1,0 +1,104 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="100%" height="100%">
+  <defs>
+    <!-- Clip to keep smooth squircle boundary -->
+    <clipPath id="squircleClip">
+      <rect x="8" y="8" width="496" height="496" rx="110" ry="110" />
+    </clipPath>
+  </defs>
+
+  <!-- Dark charcoal-slate squircle background (#1C2127) with matte gold border (#C5A059) -->
+  <rect x="8" y="8" width="496" height="496" rx="110" ry="110" fill="#1C2127" stroke="#C5A059" stroke-width="6" stroke-linejoin="round" />
+
+  <!-- TOP-RIGHT BADGE: Dark rounded square with crisp white 'S' -->
+  <g id="top-right-badge" transform="translate(412, 42)">
+    <rect x="0" y="0" width="56" height="56" rx="14" ry="14" fill="#12161A" stroke="#C5A059" stroke-width="2" />
+    <text x="28" y="38" fill="#FFFFFF" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="28" font-weight="900" text-anchor="middle">S</text>
+  </g>
+
+  <!-- TOP CENTER TEXT: Subtle grey uppercase "SOLARITHM" -->
+  <text x="256" y="82" fill="#94A3B8" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="20" font-weight="700" letter-spacing="0.35em" text-anchor="middle">SOLARITHM</text>
+
+  <!-- CENTER FLAT SYSTEM ADMINISTRATION GRAPHIC -->
+  <g id="system-admin-graphic" transform="translate(0, 0)">
+    
+    <!-- 1. LARGE MATTE GOLD GEAR (Center: 240, 240) -->
+    <g id="large-gold-gear">
+      <!-- 12 gear teeth -->
+      <path fill="#C5A059" d="
+        M 230,132 L 250,132 L 253,148 Q 260,150 267,153 L 280,143 L 294,157 L 284,170 Q 287,177 289,184 L 305,187 L 305,207 L 289,210 Q 287,217 284,224 L 294,237 L 280,251 L 267,241 Q 260,244 253,246 L 250,262 L 230,262 L 227,246 Q 220,244 213,241 L 200,251 L 186,237 L 196,224 Q 193,217 191,210 L 175,207 L 175,187 L 191,184 Q 193,177 196,170 L 186,157 L 200,143 L 213,153 Q 220,150 227,148 Z
+      " transform="scale(1.55) translate(-118, -82)" />
+      <!-- Central gear cutout showing dark charcoal -->
+      <circle cx="254" cy="225" r="38" fill="#1C2127" stroke="#C5A059" stroke-width="4" />
+    </g>
+
+    <!-- 2. SMALLER INTERLOCKED WHITE GEAR (Top-Right of large gear: around 338, 168) -->
+    <g id="small-white-gear">
+      <path fill="#F8FAFC" d="
+        M 330,118 L 344,118 L 346,128 Q 352,130 357,133 L 366,126 L 376,136 L 369,145 Q 372,150 374,156 L 384,158 L 384,172 L 374,174 Q 372,180 369,185 L 376,194 L 366,204 L 357,197 Q 352,200 346,202 L 344,212 L 330,212 L 328,202 Q 322,200 317,197 L 308,204 L 298,194 L 305,185 Q 302,180 300,174 L 290,172 L 290,158 L 300,156 Q 302,150 305,145 L 298,136 L 308,126 L 317,133 Q 322,130 328,128 Z
+      " />
+      <!-- White gear center cutout -->
+      <circle cx="337" cy="165" r="16" fill="#1C2127" stroke="#F8FAFC" stroke-width="3" />
+    </g>
+
+    <!-- 3. WHITE WRENCH (Diagonally crossing center of gold gear from top-left to bottom-right) -->
+    <g id="white-wrench" transform="rotate(-45, 254, 225) translate(254, 225)">
+      <!-- Wrench head & shaft -->
+      <path fill="#FFFFFF" fill-rule="evenodd" d="
+        M -16,-120 
+        C -36,-120 -52,-104 -52,-84 
+        C -52,-69 -43,-56 -30,-50 
+        L -16,80 
+        C -24,84 -30,93 -30,104 
+        C -30,118 -18,130 -4,130 
+        C 10,130 22,118 22,104 
+        C 22,93 16,84 8,80 
+        L 22,-50 
+        C 35,-56 44,-69 44,-84 
+        C 44,-104 28,-120 8,-120 
+        L 8,-96 
+        L -16,-96 
+        Z
+        M -6,104 
+        A 7,7 0 1,1 8,104 
+        A 7,7 0 1,1 -6,104
+      " />
+    </g>
+
+    <!-- 4. 3-NODE GOLD NETWORK HUB (Bottom-Right: connecting lines & nodes) -->
+    <g id="network-hub" transform="translate(325, 290)">
+      <!-- Interconnecting data pathways -->
+      <line x1="16" y1="20" x2="68" y2="20" stroke="#C5A059" stroke-width="4" stroke-linecap="round" />
+      <line x1="16" y1="20" x2="42" y2="68" stroke="#C5A059" stroke-width="4" stroke-linecap="round" />
+      <line x1="68" y1="20" x2="42" y2="68" stroke="#C5A059" stroke-width="4" stroke-linecap="round" />
+      
+      <!-- Node 1 (Top Left) -->
+      <circle cx="16" cy="20" r="11" fill="#C5A059" stroke="#1C2127" stroke-width="3" />
+      <circle cx="16" cy="20" r="4" fill="#FFFFFF" />
+
+      <!-- Node 2 (Top Right) -->
+      <circle cx="68" cy="20" r="11" fill="#C5A059" stroke="#1C2127" stroke-width="3" />
+      <circle cx="68" cy="20" r="4" fill="#FFFFFF" />
+
+      <!-- Node 3 (Bottom Apex) -->
+      <circle cx="42" cy="68" r="13" fill="#C5A059" stroke="#1C2127" stroke-width="3" />
+      <circle cx="42" cy="68" r="5" fill="#FFFFFF" />
+    </g>
+
+    <!-- 5. HORIZONTAL MATTE GOLD SECURITY KEY (Bottom-Left) -->
+    <g id="security-key" transform="translate(108, 310)">
+      <!-- Key Head (bow) -->
+      <circle cx="34" cy="26" r="22" fill="#C5A059" stroke="#1C2127" stroke-width="3" />
+      <circle cx="34" cy="26" r="9" fill="#1C2127" />
+      <!-- Key Shaft -->
+      <rect x="54" y="21" width="68" height="10" rx="3" fill="#C5A059" />
+      <!-- Key Bits / Teeth -->
+      <rect x="94" y="31" width="9" height="12" rx="2" fill="#C5A059" />
+      <rect x="110" y="31" width="8" height="16" rx="2" fill="#C5A059" />
+      <rect x="118" y="31" width="4" height="8" rx="1" fill="#C5A059" />
+    </g>
+
+  </g>
+
+  <!-- BOTTOM CENTER TEXT: Bold white uppercase "NEXUS" -->
+  <text x="256" y="440" fill="#FFFFFF" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="36" font-weight="900" letter-spacing="0.28em" text-anchor="middle">NEXUS</text>
+</svg>

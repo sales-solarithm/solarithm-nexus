@@ -27,7 +27,6 @@ import {
   KeyRound,
   TriangleAlert,
   AppWindow,
-  Copy,
   ExternalLink,
   Filter,
   Clock,
@@ -125,15 +124,6 @@ export interface ChangeRequestDocument {
   salesCommission?: number | string;
   projectStatus?: string;
   rawProject?: any;
-}
-
-function generateSecureTempPassword(): string {
-  if (typeof window !== 'undefined' && window.crypto?.getRandomValues) {
-    const array = new Uint32Array(1);
-    window.crypto.getRandomValues(array);
-    return 'Sol@' + array[0].toString(36).substring(0, 5).toUpperCase() + '!';
-  }
-  return 'Sol@' + Date.now().toString(36).slice(-5).toUpperCase() + '!';
 }
 
 // Helper to parse Firestore Timestamp / seconds / string / Date to milliseconds for sorting
@@ -329,17 +319,6 @@ export default function ApprovalsTab({ currentEmail, currentRole }: ApprovalsTab
   const [loadingPasswordRequests, setLoadingPasswordRequests] = useState(true);
   const [actioningPasswordId, setActioningPasswordId] = useState<string | null>(null);
   const [passwordStatusFilter, setPasswordStatusFilter] = useState<'all' | 'pending' | 'resolved' | 'unregistered'>('all');
-
-  // Resolved password credential modal
-  const [resolvedPasswordModal, setResolvedPasswordModal] = useState<{
-    isOpen: boolean;
-    email: string;
-    tempPassword?: string;
-    copied?: boolean;
-  }>({
-    isOpen: false,
-    email: '',
-  });
 
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [successMsg, setSuccessMsg] = useState<string | null>(null);
@@ -794,16 +773,16 @@ export default function ApprovalsTab({ currentEmail, currentRole }: ApprovalsTab
   // Helper to map an approvals Firestore document specifically for PASSWORD_RESET_REQUEST
   const mapPasswordResetDoc = (docSnap: any): PasswordResetRequestDocument => {
     const data = docSnap.data() || {};
-    const reqEmail = String(data.requestedEmail || data.email || '').trim();
-    const rawStatus = String(data.status || 'pending').trim().toLowerCase();
-    const status = (rawStatus === 'approved' ? 'approved' : rawStatus === 'rejected' ? 'rejected' : 'pending') as any;
+    const reqEmail = String(data.requestedEmail || data.email || '').trim().toLowerCase();
+    const rawStatus = String(data.status || 'pending').trim();
+    const status = rawStatus === 'APPROVED' ? 'APPROVED' : rawStatus.toLowerCase() === 'approved' ? 'APPROVED' : rawStatus.toLowerCase() === 'rejected' ? 'rejected' : 'pending';
 
     return {
       id: docSnap.id,
       type: 'PASSWORD_RESET_REQUEST',
       requestedEmail: reqEmail,
       email: reqEmail,
-      status,
+      status: data.status === 'APPROVED' ? 'APPROVED' : status,
       timestamp: data.timestamp,
       createdAt: data.timestamp || data.createdAt,
       appName: data.appName || data.appId || 'Solarithm App Launcher',
@@ -812,6 +791,9 @@ export default function ApprovalsTab({ currentEmail, currentRole }: ApprovalsTab
       tempPassword: data.tempPassword,
       resolvedAt: data.resolvedAt,
       resolvedBy: data.resolvedBy,
+      approvedAt: data.approvedAt,
+      approvedBy: data.approvedBy,
+      updatedAt: data.updatedAt,
       collectionName: 'approvals'
     };
   };
@@ -946,7 +928,7 @@ export default function ApprovalsTab({ currentEmail, currentRole }: ApprovalsTab
     loadPendingChangeRequests
   ]);
 
-  // Approve password reset request: updates status to APPROVED and auto-provisions employee record if not already present
+  // Approve password reset request: updates status strictly to APPROVED for /set-password portal
   const handleApprovePasswordReset = async (req: PasswordResetRequestDocument) => {
     if (!req.id) return;
     setActioningPasswordId(req.id);
@@ -954,32 +936,33 @@ export default function ApprovalsTab({ currentEmail, currentRole }: ApprovalsTab
     setSuccessMsg(null);
     try {
       const coll = 'approvals';
-      const tempPassword = generateSecureTempPassword();
       const ref = doc(db, coll, req.id);
       
-      // 1. Update status to APPROVED in approvals collection
+      const targetEmail = (req.requestedEmail || req.email || '').trim().toLowerCase();
+
+      // 1. Update status to APPROVED in approvals collection without resolvedAt or tempPassword
       await updateDoc(ref, {
         status: 'APPROVED',
-        tempPassword,
-        resolvedAt: new Date().toISOString(),
-        resolvedBy: currentEmail
+        email: targetEmail,
+        requestedEmail: targetEmail,
+        approvedBy: currentEmail,
+        approvedAt: serverTimestamp(),
+        updatedAt: serverTimestamp()
       });
 
       // 2. Employee Auto-Creation: Query employees collection for requestedEmail
-      const targetEmail = (req.requestedEmail || req.email || '').trim();
-      const normalizedEmail = targetEmail.toLowerCase();
-
-      if (normalizedEmail) {
+      if (targetEmail) {
         try {
           const employeesRef = collection(db, 'employees');
-          const empQuery = query(employeesRef, where('email', '==', normalizedEmail));
+          const empQuery = query(employeesRef, where('email', '==', targetEmail));
           const empSnap = await getDocs(empQuery);
 
           let employeeExists = !empSnap.empty;
 
           // Also check with raw email casing in case existing documents used exact casing
-          if (!employeeExists && targetEmail !== normalizedEmail) {
-            const rawEmpQuery = query(employeesRef, where('email', '==', targetEmail));
+          const rawEmail = (req.requestedEmail || req.email || '').trim();
+          if (!employeeExists && rawEmail && rawEmail !== targetEmail) {
+            const rawEmpQuery = query(employeesRef, where('email', '==', rawEmail));
             const rawEmpSnap = await getDocs(rawEmpQuery);
             employeeExists = !rawEmpSnap.empty;
           }
@@ -988,7 +971,7 @@ export default function ApprovalsTab({ currentEmail, currentRole }: ApprovalsTab
           if (!employeeExists) {
             await provisionUserRecord({
               email: targetEmail,
-              name: '',
+              name: req.employeeName || '',
               department: '',
               phone: '',
               role: 'employee',
@@ -1006,15 +989,18 @@ export default function ApprovalsTab({ currentEmail, currentRole }: ApprovalsTab
       }
 
       // 3. Update local state
-      setPasswordRequests(prev => prev.map(item => item.id === req.id ? { ...item, status: 'APPROVED', tempPassword } : item));
+      setPasswordRequests(prev => prev.map(item => item.id === req.id ? { 
+        ...item, 
+        status: 'APPROVED', 
+        email: targetEmail, 
+        requestedEmail: targetEmail,
+        approvedBy: currentEmail,
+        approvedAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString()
+      } : item));
 
       // 4. UX Feedback: Show exact success toast
-      setSuccessMsg("Request approved and employee directory updated.");
-      setResolvedPasswordModal({
-        isOpen: true,
-        email: targetEmail || req.requestedEmail,
-        tempPassword
-      });
+      setSuccessMsg(`Request approved for ${targetEmail}. The user can now set their password at /set-password.`);
       setTimeout(() => setSuccessMsg(null), 5000);
     } catch (err) {
       console.error('Error approving password reset:', err);
@@ -2156,11 +2142,6 @@ export default function ApprovalsTab({ currentEmail, currentRole }: ApprovalsTab
                             <p className="line-clamp-2 leading-relaxed" title={req.reason || 'Password reset requested via App Launcher'}>
                               {req.reason || 'Password reset requested via App Launcher'}
                             </p>
-                            {req.tempPassword && (
-                              <div className="mt-1.5 inline-flex items-center gap-1 text-[11px] text-amber-400 font-mono bg-amber-500/10 border border-amber-500/20 px-2 py-0.5 rounded">
-                                <span>Temp Pass: {req.tempPassword}</span>
-                              </div>
-                            )}
                           </td>
 
                           {/* Column 4: Submitted */}
@@ -2204,7 +2185,7 @@ export default function ApprovalsTab({ currentEmail, currentRole }: ApprovalsTab
                                     onClick={() => handleApprovePasswordReset(req)}
                                     disabled={isActioning}
                                     className="px-3 py-1.5 bg-emerald-500/10 hover:bg-emerald-500/20 border border-emerald-500/30 text-emerald-400 font-semibold text-xs rounded-lg transition-all flex items-center gap-1 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
-                                    title="Approve password reset request and generate credentials"
+                                    title="Approve password reset request for /set-password portal"
                                   >
                                     {isActioning ? (
                                       <RefreshCw className="w-3.5 h-3.5 animate-spin" />
@@ -2229,7 +2210,7 @@ export default function ApprovalsTab({ currentEmail, currentRole }: ApprovalsTab
                                 </>
                               ) : (
                                 <span className="text-xs text-gray-400 font-mono">
-                                  {req.resolvedBy ? `By ${req.resolvedBy}` : 'Completed'}
+                                  {req.approvedBy ? `Approved by ${req.approvedBy}` : req.resolvedBy ? `By ${req.resolvedBy}` : 'Approved'}
                                 </span>
                               )}
                               <button
@@ -2265,71 +2246,6 @@ export default function ApprovalsTab({ currentEmail, currentRole }: ApprovalsTab
         }}
         currentEmail={currentEmail}
       />
-      {/* Modal: View Approved Temporary Password */}
-      {resolvedPasswordModal.isOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-4">
-          <div className="w-full max-w-md bg-[#1E1E1E] border border-[#333333] rounded-xl p-6 md:p-8 space-y-5 shadow-2xl relative">
-            <div className="flex items-center justify-between pb-3 border-b border-[#2A2A2A]">
-              <h3 className="text-base font-bold text-white flex items-center gap-2">
-                <CheckCircle2 className="w-5 h-5 text-emerald-400" />
-                Password Reset Approved
-              </h3>
-              <button
-                onClick={() => setResolvedPasswordModal({ isOpen: false, email: '' })}
-                className="text-gray-400 hover:text-white p-1 rounded-lg hover:bg-[#2A2A2A] cursor-pointer"
-              >
-                <X className="w-4 h-4" />
-              </button>
-            </div>
-
-            <p className="text-sm text-gray-300">
-              A temporary password has been generated for <strong className="text-white">{resolvedPasswordModal.email}</strong>.
-            </p>
-
-            <div className="p-4 bg-[#2A2A2A] border border-[#333333] rounded-xl flex items-center justify-between gap-3">
-              <span className="font-mono text-base font-bold text-amber-400 tracking-wider">
-                {resolvedPasswordModal.tempPassword}
-              </span>
-              <button
-                onClick={() => {
-                  if (resolvedPasswordModal.tempPassword) {
-                    navigator.clipboard.writeText(resolvedPasswordModal.tempPassword);
-                    setResolvedPasswordModal(prev => ({ ...prev, copied: true }));
-                    setTimeout(() => setResolvedPasswordModal(prev => ({ ...prev, copied: false })), 2500);
-                  }
-                }}
-                className="px-3 py-1.5 bg-[#1E1E1E] hover:bg-[#333333] border border-[#444444] rounded-lg text-xs font-semibold text-gray-200 flex items-center gap-1.5 transition-all cursor-pointer"
-              >
-                {resolvedPasswordModal.copied ? (
-                  <>
-                    <Check className="w-3.5 h-3.5 text-emerald-400" />
-                    Copied!
-                  </>
-                ) : (
-                  <>
-                    <Copy className="w-3.5 h-3.5 text-gray-400" />
-                    Copy
-                  </>
-                )}
-              </button>
-            </div>
-
-            <p className="text-xs text-gray-500">
-              Provide this temporary password to the user. They will be prompted to update their password upon sign-in.
-            </p>
-
-            <div className="pt-2 flex justify-end border-t border-[#2A2A2A]">
-              <button
-                type="button"
-                onClick={() => setResolvedPasswordModal({ isOpen: false, email: '' })}
-                className="px-5 py-2 bg-[#D4AF37] hover:bg-[#E5C158] text-black font-bold text-sm rounded-lg cursor-pointer transition-all"
-              >
-                Done
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
 
       {/* Custom Delete Confirmation Modal */}
       <ConfirmModal
